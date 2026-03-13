@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Campus Bites – Sign In</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,400&display=swap" rel="stylesheet"/>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#0c0e15;--surf:#161921;--card:#1c2030;--border:#252b3b;--acc:#f97316;--acc2:#fb923c;--text:#f0f2f8;--muted:#7d8899;--err:#ef4444;--ok:#22c55e;--r:13px;--fh:'Syne',sans-serif;--fb:'DM Sans',sans-serif}
+html,body{height:100%}
+body{background:var(--bg);color:var(--text);font-family:var(--fb);display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;overflow-x:hidden}
+body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellipse 90% 70% at 15% 5%,rgba(249,115,22,.16) 0%,transparent 55%),radial-gradient(ellipse 60% 50% at 85% 95%,rgba(249,115,22,.1) 0%,transparent 50%);pointer-events:none;z-index:0}
+.page{position:relative;z-index:1;display:grid;grid-template-columns:1fr 420px;gap:56px;width:100%;max-width:880px;align-items:center}
+.brand{padding:8px}
+.logo-box{width:60px;height:60px;background:linear-gradient(135deg,var(--acc),#c2410c);border-radius:16px;display:flex;align-items:center;justify-content:center;font-size:28px;margin-bottom:24px;box-shadow:0 8px 28px rgba(249,115,22,.35)}
+.brand h1{font-family:var(--fh);font-size:44px;font-weight:800;line-height:1.08;background:linear-gradient(140deg,#fff 40%,var(--acc2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;margin-bottom:14px}
+.brand p{color:var(--muted);font-size:15px;line-height:1.65;max-width:300px;margin-bottom:36px}
+.feats{display:flex;flex-direction:column;gap:12px}
+.feat{display:flex;align-items:center;gap:10px;font-size:13px;color:#9aa3b2}
+.feat-dot{width:6px;height:6px;background:var(--acc);border-radius:50%;flex-shrink:0;box-shadow:0 0 8px rgba(249,115,22,.6)}
+.card{background:var(--card);border:1px solid var(--border);border-radius:20px;padding:34px 30px;box-shadow:0 24px 60px rgba(0,0,0,.55)}
+.tabs{display:flex;background:var(--surf);border-radius:10px;padding:4px;margin-bottom:26px;border:1px solid var(--border);gap:4px}
+.tab{flex:1;padding:9px;text-align:center;font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);cursor:pointer;border-radius:7px;transition:all .2s;letter-spacing:.05em;text-transform:uppercase}
+.tab.active{background:var(--acc);color:#fff;box-shadow:0 3px 12px rgba(249,115,22,.4)}
+.fs{display:none}.fs.active{display:block}
+.ft{font-family:var(--fh);font-size:20px;font-weight:700;margin-bottom:3px}
+.fsub{color:var(--muted);font-size:13px;margin-bottom:22px}
+.f{margin-bottom:14px}
+.f label{display:block;font-size:11px;font-weight:500;color:var(--muted);margin-bottom:5px;letter-spacing:.07em;text-transform:uppercase}
+.f input{width:100%;background:var(--surf);border:1px solid var(--border);border-radius:var(--r);padding:11px 13px;color:var(--text);font-family:var(--fb);font-size:14px;outline:none;transition:border-color .2s,box-shadow .2s}
+.f input:focus{border-color:var(--acc);box-shadow:0 0 0 3px rgba(249,115,22,.14)}
+.f input::placeholder{color:#3d4758}
+.fr{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.pw{position:relative}.pw input{padding-right:40px}
+.eye{position:absolute;right:11px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--muted);cursor:pointer;font-size:15px;padding:3px;line-height:1}
+.eye:hover{color:var(--text)}
+.note{background:rgba(249,115,22,.07);border:1px solid rgba(249,115,22,.18);border-radius:9px;padding:9px 11px;font-size:12px;color:var(--acc2);margin-bottom:14px;display:flex;align-items:center;gap:7px}
+.btn{width:100%;padding:13px;background:linear-gradient(135deg,var(--acc),#c2410c);color:#fff;border:none;border-radius:var(--r);font-family:var(--fh);font-size:14px;font-weight:700;cursor:pointer;margin-top:6px;transition:opacity .2s,transform .1s,box-shadow .2s;box-shadow:0 4px 18px rgba(249,115,22,.38);letter-spacing:.05em;text-transform:uppercase;display:flex;align-items:center;justify-content:center;gap:8px}
+.btn:hover:not(:disabled){opacity:.9;transform:translateY(-1px);box-shadow:0 6px 22px rgba(249,115,22,.48)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.spin{width:14px;height:14px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:spin .6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.al{border-radius:9px;padding:10px 13px;font-size:13px;margin-bottom:14px;display:none;align-items:flex-start;gap:8px;line-height:1.4}
+.al.show{display:flex}
+.al.ok{background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.25);color:#86efac}
+.al.err{background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);color:#fca5a5}
+.lnk{text-align:center;margin-top:16px;font-size:12px;color:var(--muted)}
+.lnk a{color:var(--acc2);text-decoration:none;font-weight:500}
+.lnk a:hover{text-decoration:underline}
+.div{display:flex;align-items:center;gap:10px;margin:16px 0;color:#374151;font-size:11px}
+.div::before,.div::after{content:'';flex:1;height:1px;background:var(--border)}
+@media(max-width:700px){.page{grid-template-columns:1fr}.brand{display:none}.card{padding:26px 20px}}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="brand">
+    <div class="logo-box">🍱</div>
+    <h1>Campus<br/>Bites</h1>
+    <p>Your campus canteen, now online. Order ahead, skip the queue, pay with UPI.</p>
+    <div class="feats">
+      <div class="feat"><div class="feat-dot"></div>Live order status tracking</div>
+      <div class="feat"><div class="feat-dot"></div>UPI / PhonePe payment</div>
+      <div class="feat"><div class="feat-dot"></div>Pre-order to skip the queue</div>
+      <div class="feat"><div class="feat-dot"></div>Order history & reorder</div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="tabs">
+      <div class="tab active" id="t1" onclick="sw('login')">Sign In</div>
+      <div class="tab" id="t2" onclick="sw('signup')">Sign Up</div>
+    </div>
+    <!-- LOGIN -->
+    <div class="fs active" id="loginSec">
+      <div class="ft">Welcome back 👋</div>
+      <div class="fsub">Email or roll number + password</div>
+      <div id="la" class="al"></div>
+      <form onsubmit="doLogin(event)">
+        <div class="f"><label>Email or Roll Number</label><input id="li" type="text" placeholder="student@college.edu or 22CS001" required/></div>
+        <div class="f"><label>Password</label><div class="pw"><input id="lp" type="password" placeholder="••••••••" required/><button type="button" class="eye" onclick="tgl('lp',this)">👁</button></div></div>
+        <button class="btn" id="lb" type="submit"><span>Sign In</span></button>
+      </form>
+      <div class="div">or</div>
+      <div class="lnk"><a href="/admin-login.html">Admin? Login here →</a></div>
+    </div>
+    <!-- SIGNUP -->
+    <div class="fs" id="signupSec">
+      <div class="ft">Create account</div>
+      <div class="fsub">Register with your college email</div>
+      <div class="note">🎓 Student accounts only. Admins are set up by canteen.</div>
+      <div id="sa" class="al"></div>
+      <form onsubmit="doSignup(event)">
+        <div class="fr">
+          <div class="f"><label>Full Name</label><input id="sn" type="text" placeholder="Kowshik Thota" required maxlength="50"/></div>
+          <div class="f"><label>Roll Number</label><input id="sr" type="text" placeholder="22CS001" maxlength="20"/></div>
+        </div>
+        <div class="f"><label>Email</label><input id="se" type="email" placeholder="student@college.edu" required/></div>
+        <div class="f"><label>Phone (optional)</label><input id="sph" type="tel" placeholder="+91 9XXXXXXXXX"/></div>
+        <div class="f"><label>Password</label><div class="pw"><input id="sp" type="password" placeholder="Min. 6 characters" required minlength="6"/><button type="button" class="eye" onclick="tgl('sp',this)">👁</button></div></div>
+        <div class="f"><label>Confirm Password</label><div class="pw"><input id="sc" type="password" placeholder="Re-enter password" required/><button type="button" class="eye" onclick="tgl('sc',this)">👁</button></div></div>
+        <button class="btn" id="sb" type="submit"><span>Create Account</span></button>
+      </form>
+    </div>
+  </div>
+</div>
+<script>
+const API=location.origin+"/api";
+function sw(t){["login","signup"].forEach(x=>{document.getElementById("t"+(x==="login"?1:2)).classList.toggle("active",x===t);document.getElementById(x+"Sec").classList.toggle("active",x===t)});document.getElementById("la").className="al";document.getElementById("sa").className="al"}
+function al(id,msg,type){const e=document.getElementById(id);e.textContent=msg;e.className="al show "+type;e.scrollIntoView({block:"nearest"})}
+function tgl(id,btn){const i=document.getElementById(id);i.type=i.type==="password"?"text":"password";btn.textContent=i.type==="password"?"👁":"🙈"}
+function setBtn(id,loading,txt){const b=document.getElementById(id);b.disabled=loading;b.innerHTML=loading?`<div class="spin"></div><span>${txt}</span>`:`<span>${txt}</span>`}
+
+async function doLogin(e){
+  e.preventDefault();
+  const id=document.getElementById("li").value.trim(),pw=document.getElementById("lp").value;
+  if(!id||!pw)return al("la","Please fill all fields","err");
+  setBtn("lb",true,"Signing in…");
+  try{
+    const r=await fetch(`${API}/auth/login`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({identifier:id,password:pw})});
+    const d=await r.json();
+    if(!r.ok)throw new Error(d.error||"Login failed");
+    localStorage.setItem("cb_token",d.token);localStorage.setItem("cb_user",JSON.stringify(d.user));
+    al("la","✅ Logged in! Redirecting…","ok");
+    setTimeout(()=>{location.href=d.user.role==="admin"?"/admin.html":"/index.html"},700);
+  }catch(err){al("la",err.message,"err")}finally{setBtn("lb",false,"Sign In")}
+}
+
+async function doSignup(e){
+  e.preventDefault();
+  const n=document.getElementById("sn").value.trim(),r=document.getElementById("sr").value.trim(),
+        em=document.getElementById("se").value.trim(),ph=document.getElementById("sph").value.trim(),
+        pw=document.getElementById("sp").value,c=document.getElementById("sc").value;
+  if(!n||!em||!pw)return al("sa","Name, email and password required","err");
+  if(pw!==c)return al("sa","Passwords do not match","err");
+  if(pw.length<6)return al("sa","Password must be at least 6 characters","err");
+  setBtn("sb",true,"Creating account…");
+  try{
+    const res=await fetch(`${API}/auth/register`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:n,email:em,password:pw,rollNumber:r,phone:ph})});
+    const d=await res.json();
+    if(!res.ok)throw new Error(d.error||"Registration failed");
+    localStorage.setItem("cb_token",d.token);localStorage.setItem("cb_user",JSON.stringify(d.user));
+    al("sa","🎉 Account created! Redirecting…","ok");
+    setTimeout(()=>{location.href="/index.html"},800);
+  }catch(err){al("sa",err.message,"err")}finally{setBtn("sb",false,"Create Account")}
+}
+
+(function(){const u=JSON.parse(localStorage.getItem("cb_user")||"null"),t=localStorage.getItem("cb_token");if(t&&u)location.href=u.role==="admin"?"/admin.html":"/index.html"})();
+</script>
+</body></html>
