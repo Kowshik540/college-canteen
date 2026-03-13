@@ -11,7 +11,7 @@ let revenueChart     = null;
 let aoCart           = [];
 let lunchCheckInterval;
 
-const API = "";   // relative URLs — works locally + on Render
+const API = "https://college-canteen-qr2t.onrender.com/api";   // relative URLs — works locally + on Render
 
 function getAuthHeaders() {
   return {
