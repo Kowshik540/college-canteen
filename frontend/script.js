@@ -532,7 +532,7 @@ async function placeOrderCash(pickupTime) {
 // ══════════════════════════════════════════════════
 
 // ★ Set your actual UPI ID here
-const UPI_ID = "yourcollege@upi";
+const UPI_ID = "const UPI_ID = "9440487580@upi or 9440487580-3@axl";
 
 let _upiPickupTime   = "";
 let _upiPendingOrder = null;  // order created before screenshot upload
