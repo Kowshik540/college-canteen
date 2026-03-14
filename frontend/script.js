@@ -13,10 +13,23 @@ let aoCart           = [];
 const API = "https://college-canteen-qr2t.onrender.com";
 
 function getAuthHeaders() {
+  // Check both storages — localStorage for "remember me", sessionStorage for session-only
+  const token = localStorage.getItem("token") || sessionStorage.getItem("token");
   return {
-    "Authorization": "Bearer " + localStorage.getItem("token"),
+    "Authorization": "Bearer " + token,
     "Content-Type":  "application/json",
   };
+}
+
+// Helper: get stored user from either storage
+function _getStoredUser() {
+  const raw = localStorage.getItem("user") || sessionStorage.getItem("user");
+  try { return raw ? JSON.parse(raw) : null; } catch { return null; }
+}
+
+// Helper: get token from either storage
+function _getToken() {
+  return localStorage.getItem("token") || sessionStorage.getItem("token");
 }
 
 // ══════════════════════════════════════════════════
@@ -252,8 +265,13 @@ async function handleLogin(event) {
     });
     const data = await res.json();
     if (!res.ok) { showToast(data.error || "Login failed", "error"); return; }
-    localStorage.setItem("token", data.token);
-    localStorage.setItem("user",  JSON.stringify(data.user));
+    const rememberMe = document.getElementById("rememberMe")?.checked ?? true;
+    const store = rememberMe ? localStorage : sessionStorage;
+    // If switching from remember to no-remember, clear old storage
+    if (!rememberMe) localStorage.removeItem("token"), localStorage.removeItem("user");
+    else             sessionStorage.removeItem("token"), sessionStorage.removeItem("user");
+    store.setItem("token", data.token);
+    store.setItem("user",  JSON.stringify(data.user));
     showToast("Welcome back! ✅", "success");
     updateNavbar();
     // Auto-request notification permission for both students and admin
@@ -293,7 +311,7 @@ async function handleRegister(e) {
 // AUTH — NAVBAR & LOGOUT
 // ══════════════════════════════════════════════════
 function updateNavbar() {
-  const user      = JSON.parse(localStorage.getItem("user") || "null");
+  const user      = _getStoredUser();
   const loginBtn  = document.getElementById("loginBtnNav");
   const logoutBtn = document.getElementById("logoutBtn");
   const ordersBtn = document.getElementById("myOrdersBtn");
@@ -332,6 +350,7 @@ function logout() {
   if (_profilePageInterval) { clearInterval(_profilePageInterval); _profilePageInterval = null; }
   _studentOrderStatusCache.clear();
   localStorage.clear();
+  sessionStorage.clear();
   cart = [];
   const mobileNav = document.getElementById("mobileBottomNav");
   if (mobileNav) mobileNav.style.display = "none";
@@ -343,7 +362,7 @@ function logout() {
 // ══════════════════════════════════════════════════
 async function loadProfile() {
   const content = document.getElementById("profileContent");
-  const user    = JSON.parse(localStorage.getItem("user") || "null");
+  const user    = _getStoredUser();
   if (!content || !user) return;
 
   if (!content.querySelector(".profile-card")) {
@@ -598,7 +617,7 @@ function closeCart() { document.getElementById("cartModal")?.classList.remove("a
 async function placeOrder() {
   if (isLunchBreakNow()) { showToast("🚫 Ordering blocked during lunch break.", "error"); return; }
   if (!cart.length) { showToast("Cart is empty", "error"); return; }
-  if (!localStorage.getItem("token")) { showToast("Please login first", "error"); showPage("loginPage"); return; }
+  if (!_getToken()) { showToast("Please login first", "error"); showPage("loginPage"); return; }
 
   const pickupTime    = document.getElementById("pickupTime")?.value;
   const paymentMethod = document.querySelector('input[name="paymentMethod"]:checked')?.value || "online";
@@ -699,7 +718,7 @@ async function submitUpiPayment() {
     formData.append("utrNumber",  document.getElementById("upiUtrInput").value || "");
     const uploadRes  = await fetch(`${API}/api/orders/${_upiPendingOrder._id}/upload-payment`, {
       method: "POST",
-      headers: { "Authorization": "Bearer " + localStorage.getItem("token") },
+      headers: { "Authorization": "Bearer " + _getToken() },
       body: formData,
     });
     const uploadData = await uploadRes.json();
@@ -804,7 +823,7 @@ async function loadMyOrders() {
 }
 
 function _buildMyOrderCard(o, active, payLabel) {
-  const user = JSON.parse(localStorage.getItem("user") || "{}");
+  const user = (_getStoredUser() || {});
   return `
     <div class="order-card ${active ? "order-card-active" : ""}" data-oid="${o._id}">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
@@ -1047,10 +1066,13 @@ async function loadAdminOrders() {
     const data = await res.json();
 
     // ── KEY FILTER: only show orders where payment is confirmed ──
-    // Cash orders are always shown. Online orders only shown after payment verified (paid).
+    // Cash orders (including admin walk-ins) always shown.
+    // Online/UPI orders only shown after admin approves (paymentStatus === "paid").
     const allOrders = (data.orders || []).filter(o => _laneOf(o.status));
     const active    = allOrders.filter(o =>
-      o.paymentMethod === "cash" || o.paymentStatus === "paid"
+      o.paymentMethod === "cash" ||
+      o.createdByAdmin === true  ||
+      o.paymentStatus  === "paid"
     );
 
     // Fire admin new-order notifications
@@ -1151,22 +1173,87 @@ async function loadAdminOrders() {
 
 async function updateOrderStatus(id, status, btn) {
   if (btn) { btn.disabled = true; btn.textContent = "Updating..."; }
+
+  // ── Optimistic instant UI update ──
+  // Move / remove the card immediately so admin sees instant feedback
+  const laneConfig = {
+    new:       { title: "New Orders",   icon: "⏳", color: "#f97316", next: "preparing", label: "🍳 Start Preparing" },
+    preparing: { title: "Preparing",    icon: "🍳", color: "#0d6efd", next: "ready",     label: "🔔 Mark Ready"      },
+    ready:     { title: "Ready Pickup", icon: "🔔", color: "#048A81", next: "delivered", label: "🎉 Delivered"        },
+  };
+  const newLane = _laneOf(status);
+  const card    = document.getElementById(`order-${id}`);
+
+  if (status === "delivered" || status === "cancelled") {
+    // Animate card out immediately
+    if (card) _animateCardOut(card);
+    _ordersCache.delete(id);
+  } else if (card && newLane) {
+    const cfg = laneConfig[newLane];
+    const oldLane = _ordersCache.get(id)?.lane;
+    if (oldLane && oldLane !== newLane) {
+      // Move card to new lane visually right away
+      _animateCardOut(card, () => {
+        const newGrid = document.getElementById(`grid-${newLane}`);
+        if (newGrid) {
+          // Build placeholder card with new status
+          const div = document.createElement("div");
+          div.innerHTML = card.outerHTML
+            .replace(`id="order-${id}"`, `id="order-${id}"`)
+            .replace(/data-status="[^"]*"/, `data-status="${status}"`);
+          const newCard = div.firstElementChild;
+          // Update action button
+          const actionBtn = newCard.querySelector(".order-action-btn");
+          if (actionBtn && cfg) {
+            actionBtn.style.background = cfg.color;
+            actionBtn.textContent      = cfg.label;
+            actionBtn.onclick = () => updateOrderStatus(id, cfg.next, actionBtn);
+          }
+          // Update status badge
+          const badge = newCard.querySelector(".order-status");
+          if (badge) { badge.className = `order-status ${status}`; badge.textContent = status.toUpperCase(); }
+          _animateCardIn(newCard, newGrid);
+        }
+      });
+    } else {
+      // Same lane — just patch badge + button
+      const badge = card.querySelector(".order-status");
+      if (badge) { badge.className = `order-status ${status}`; badge.textContent = status.toUpperCase(); }
+      if (btn) { btn.textContent = cfg?.label || status; btn.disabled = false; }
+    }
+    _ordersCache.set(id, { status, lane: newLane });
+  }
+
+  // Update section counts immediately
+  Object.keys(laneConfig).forEach(laneId => {
+    const grid    = document.getElementById(`grid-${laneId}`);
+    const countEl = document.getElementById(`count-${laneId}`);
+    const section = document.getElementById(`section-${laneId}`);
+    if (!grid || !countEl || !section) return;
+    const count = grid.querySelectorAll(".order-card").length;
+    countEl.textContent   = count;
+    section.style.display = count > 0 ? "block" : "none";
+  });
+
+  // ── Background server update ──
   try {
     const res = await fetch(`${API}/api/admin/orders/${id}/status`, {
       method: "PATCH", headers: getAuthHeaders(), body: JSON.stringify({ status }),
     });
     if (!res.ok) {
-      showToast("Update failed", "error");
-      if (btn) { btn.disabled = false; btn.textContent = btn.dataset.label || "Update"; }
+      showToast("Update failed — refreshing", "error");
+      _ordersCache.delete(id);
+      loadAdminOrders();  // resync from server
       return;
     }
-    showToast(`Order moved to ${status} ✅`, "success");
-    _ordersCache.delete(id);
-    await loadAdminOrders();
+    showToast(`Order → ${status} ✅`, "success");
+    // Light background sync — don't block UI
     loadAdminStats();
+    setTimeout(loadAdminOrders, 1000);  // delayed sync to confirm server state
   } catch {
-    showToast("Network error", "error");
-    if (btn) { btn.disabled = false; }
+    showToast("Network error — refreshing", "error");
+    _ordersCache.delete(id);
+    loadAdminOrders();
   }
 }
 
@@ -1780,8 +1867,8 @@ setInterval(async () => {
   if (adminPage?.classList.contains("active")) {
     // Orders tab: refresh every 2 seconds (guarded by _adminOrdersRendering)
     if (currentAdminTab === "orders" && _adminTick % 2 === 0) loadAdminOrders();
-    // Payments tab: refresh every 4 seconds (guarded by key diff)
-    if (currentAdminTab === "payments" && _adminTick % 4 === 0) loadAdminPayments();
+    // Payments tab: refresh every 8 seconds (key-diff prevents DOM rebuilds if unchanged)
+    if (currentAdminTab === "payments" && _adminTick % 8 === 0) loadAdminPayments();
     // Stats: every 10 seconds
     if (_adminTick % 10 === 0) { loadAdminStats(); refreshPaymentsBadge(); }
   }
@@ -1822,7 +1909,7 @@ document.addEventListener("DOMContentLoaded", () => {
   setInterval(updateLunchBanner, 60000);
 
   // If user is already logged in from a previous session, auto-request notif permission
-  const _existingUser = JSON.parse(localStorage.getItem("user") || "null");
+  const _existingUser = _getStoredUser();
   if (_existingUser) {
     // Small delay so page finishes loading first
     setTimeout(_autoRequestNotifPermission, 1500);
