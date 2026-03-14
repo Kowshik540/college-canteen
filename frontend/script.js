@@ -73,20 +73,39 @@ function showToast(msg, type = "info") {
 // ══════════════════════════════════════════════════
 let _notifEnabled = false;
 
-// Auto-request on page load if already granted before
+// Auto-enable if already granted in a previous session
 if (typeof Notification !== "undefined" && Notification.permission === "granted") {
   _notifEnabled = true;
 }
 
+// Auto-prompt for permission silently when user is logged in
+// Called after login and on DOMContentLoaded if already logged in
+async function _autoRequestNotifPermission() {
+  if (!("Notification" in window)) return;
+  if (Notification.permission === "granted") { _notifEnabled = true; return; }
+  if (Notification.permission === "denied")  return; // user explicitly denied — don't ask again
+  // "default" — ask once
+  try {
+    const perm = await Notification.requestPermission();
+    if (perm === "granted") {
+      _notifEnabled = true;
+      _fireNotif("🔔 CampusBites", "You'll now get order status notifications!", "init");
+    }
+  } catch(e) {}
+}
+
 async function requestPushPermission() {
   const btn = document.getElementById("notifBtn");
-  if (!("Notification" in window)) { showToast("Notifications not supported", "error"); return; }
+  if (!("Notification" in window)) { showToast("Notifications not supported on this browser", "error"); return; }
+  if (Notification.permission === "denied") {
+    showToast("Notifications blocked — enable in browser settings 🔔", "error"); return;
+  }
   const permission = await Notification.requestPermission();
   if (permission !== "granted") { showToast("Notification permission denied", "error"); return; }
   _notifEnabled = true;
   if (btn) { btn.textContent = "🔔 Notifications ON"; btn.style.background = "#2D6A4F"; }
   showToast("Notifications enabled ✅", "success");
-  _fireNotif("🎉 CampusBites", "Notifications are now ON!");
+  _fireNotif("🎉 CampusBites", "You will now receive order alerts!", "admin-init");
 }
 
 function _fireNotif(title, body, tag) {
@@ -96,9 +115,10 @@ function _fireNotif(title, body, tag) {
       body,
       icon:  "/images/upi-qr.PNG",
       badge: "/images/upi-qr.PNG",
-      tag:   tag || "campusbites-" + Date.now(),
+      tag:   tag || "cb-" + Date.now(),
+      requireInteraction: false,
     });
-  } catch(e) {}
+  } catch(e) { console.warn("Notification failed:", e); }
 }
 
 // ── Student notifications — track order status changes ──
@@ -110,7 +130,9 @@ function _checkStudentOrderNotifs(orders) {
   orders.forEach(o => {
     const prev = _studentOrderStatusCache.get(o._id);
     const cur  = o.status + "|" + (o.paymentStatus || "");
-    if (prev && prev !== cur) {
+    // First time seeing this order — just record, don't fire
+    if (!prev) { _studentOrderStatusCache.set(o._id, cur); return; }
+    if (prev !== cur) {
       // Status or payment status changed — fire appropriate notification
       if (o.status === "ready") {
         _fireNotif("🔔 Order Ready!", `Your order #${o._id.slice(-6).toUpperCase()} is ready for pickup!`, "ready-" + o._id);
@@ -134,26 +156,49 @@ function _checkStudentOrderNotifs(orders) {
   });
 }
 
-// ── Admin notifications — new orders ──
-let _adminLastOrderIds = null;
+// ── Admin notifications — new orders + new payment uploads ──
+let _adminLastOrderIds  = null;
+let _adminLastPmtIds    = null;
 
 function _checkAdminNewOrderNotifs(orders) {
   if (Notification.permission !== "granted") return;
   const currentIds = new Set(orders.map(o => o._id));
   if (_adminLastOrderIds === null) {
-    // First load — just initialise, don't fire
     _adminLastOrderIds = currentIds;
     return;
   }
-  const newOrders = orders.filter(o => !_adminLastOrderIds.has(o._id) && o.status === "confirmed");
+  // New orders that just became confirmed (cash or approved UPI)
+  const newOrders = orders.filter(o =>
+    !_adminLastOrderIds.has(o._id) &&
+    (o.paymentMethod === "cash" || o.paymentStatus === "paid")
+  );
   if (newOrders.length > 0) {
     _fireNotif(
       `🛎️ ${newOrders.length} New Order${newOrders.length > 1 ? "s" : ""}!`,
-      newOrders.map(o => `#${o._id.slice(-6).toUpperCase()} — ₹${o.totalAmount}`).join("\n"),
+      newOrders.map(o => `#${o._id.slice(-6).toUpperCase()} · ₹${o.totalAmount}`).join("\n"),
       "new-order-" + Date.now()
     );
   }
   _adminLastOrderIds = currentIds;
+}
+
+// Called during payments poll — notify admin of new screenshot uploads
+function _checkAdminNewPaymentUploads(orders) {
+  if (Notification.permission !== "granted") return;
+  const currentPmtIds = new Set(orders.map(o => o._id));
+  if (_adminLastPmtIds === null) {
+    _adminLastPmtIds = currentPmtIds;
+    return;
+  }
+  const newUploads = orders.filter(o => !_adminLastPmtIds.has(o._id));
+  if (newUploads.length > 0) {
+    _fireNotif(
+      `💳 ${newUploads.length} New Payment${newUploads.length > 1 ? "s" : ""} to Verify!`,
+      newUploads.map(o => `#${o._id.slice(-6).toUpperCase()} · ₹${o.totalAmount} · ${o.user?.name || "Student"}`).join("\n"),
+      "new-payment-" + Date.now()
+    );
+  }
+  _adminLastPmtIds = currentPmtIds;
 }
 
 // ══════════════════════════════════════════════════
@@ -211,6 +256,8 @@ async function handleLogin(event) {
     localStorage.setItem("user",  JSON.stringify(data.user));
     showToast("Welcome back! ✅", "success");
     updateNavbar();
+    // Auto-request notification permission for both students and admin
+    _autoRequestNotifPermission();
     showPage(data.user.role === "admin" ? "adminPage" : "mainPage");
   } catch { showToast("Network error", "error"); }
 }
@@ -271,6 +318,13 @@ function updateNavbar() {
   const profileBtn = document.getElementById("profileBtn");
   if (profileBtn) profileBtn.style.display = user.role === "user" ? "inline-block" : "none";
   if (mobileNav)  mobileNav.style.display  = user.role === "user" ? "flex" : "none";
+
+  // Update notification button state
+  const notifBtn = document.getElementById("notifBtn");
+  if (notifBtn && typeof Notification !== "undefined" && Notification.permission === "granted") {
+    notifBtn.textContent = "🔔 Notifications ON";
+    notifBtn.style.background = "#2D6A4F";
+  }
 }
 
 function logout() {
@@ -1154,96 +1208,182 @@ async function loadAdminPayments() {
     const data   = await res.json();
     const orders = data.orders || [];
 
-    // Update badge
+    // Admin notification for new payment uploads
+    _checkAdminNewPaymentUploads(orders);
+
+    // Badge update
     const badge = document.getElementById("pendingPaymentsBadge");
     if (badge) {
       badge.textContent   = orders.length;
       badge.style.display = orders.length ? "inline" : "none";
     }
 
-    // Only rebuild HTML if the data actually changed (prevents flicker on poll)
-    const newKey = orders.map(o => o._id + o.paymentStatus).join(",");
-    if (newKey === _paymentsRenderKey) return;
+    // Only rebuild if data changed — prevents flicker on background poll
+    const newKey = orders.map(o => o._id + (o.paymentUtrNote||"") + (o.paymentScreenshot||"")).join(",");
+    if (newKey === _paymentsRenderKey && content.querySelector(".pmt-card")) return;
     _paymentsRenderKey = newKey;
 
     if (!orders.length) {
-      content.innerHTML = `<div style="text-align:center;padding:3rem;opacity:0.4;font-size:1.1rem;">✅ No pending payment verifications</div>`;
+      content.innerHTML = `
+        <div style="text-align:center;padding:4rem 2rem;opacity:0.5;">
+          <div style="font-size:3rem;margin-bottom:12px;">✅</div>
+          <p style="font-size:1.1rem;font-weight:600;">No pending verifications</p>
+          <p style="font-size:0.85rem;margin-top:4px;">All payments are verified</p>
+        </div>`;
       return;
     }
 
     content.innerHTML = `
-      <h3 style="margin-bottom:1rem;">💳 Pending UPI Verifications
-        <span style="background:#e63946;color:#fff;border-radius:99px;padding:2px 10px;font-size:0.8rem;margin-left:8px;">${orders.length}</span>
+      <style>
+        .pmt-card {
+          background: rgba(255,255,255,0.04);
+          border: 1px solid rgba(255,255,255,0.1);
+          border-radius: 16px;
+          padding: 0;
+          overflow: hidden;
+          margin-bottom: 16px;
+          max-width: 520px;
+          width: 100%;
+          box-sizing: border-box;
+        }
+        .pmt-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 14px 16px 10px;
+          border-bottom: 1px solid rgba(255,255,255,0.07);
+        }
+        .pmt-section { padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+        .pmt-section:last-child { border-bottom: none; }
+        .pmt-utr-box {
+          background: rgba(249,115,22,0.12);
+          border: 1.5px solid rgba(249,115,22,0.4);
+          border-radius: 10px;
+          padding: 10px 14px;
+          margin: 0;
+        }
+        .pmt-utr-label { font-size: 0.7rem; opacity: 0.6; margin: 0 0 3px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .pmt-utr-value { font-size: 1.15rem; font-weight: 800; color: #f97316; font-family: monospace; margin: 0; letter-spacing: 1px; word-break: break-all; }
+        .pmt-screenshot-wrap { display: block; width: 100%; }
+        .pmt-screenshot-img {
+          width: 100%;
+          max-height: 340px;
+          object-fit: contain;
+          display: block;
+          background: rgba(255,255,255,0.06);
+          cursor: pointer;
+        }
+        .pmt-screenshot-hint { font-size: 0.72rem; opacity: 0.4; text-align: center; padding: 6px 0 10px; }
+        .pmt-no-screenshot {
+          border: 2px dashed rgba(249,115,22,0.2);
+          border-radius: 10px;
+          padding: 20px;
+          text-align: center;
+          opacity: 0.45;
+          font-size: 0.88rem;
+        }
+        .pmt-actions { display: flex; gap: 10px; padding: 14px 16px; }
+        .pmt-btn { flex: 1; padding: 13px 8px; border: none; border-radius: 10px; font-size: 0.95rem; font-weight: 700; cursor: pointer; transition: opacity 0.15s, transform 0.1s; font-family: inherit; }
+        .pmt-btn:active { opacity: 0.8; transform: scale(0.98); }
+        .pmt-btn-approve { background: #2D6A4F; color: #fff; }
+        .pmt-btn-reject  { background: #e63946; color: #fff; }
+        @media (max-width: 480px) {
+          .pmt-card { border-radius: 12px; }
+          .pmt-utr-value { font-size: 1rem; }
+          .pmt-screenshot-img { max-height: 260px; }
+        }
+      </style>
+      <h3 style="margin:0 0 16px;font-size:1.1rem;">
+        💳 Pending UPI Verifications
+        <span style="background:#e63946;color:#fff;border-radius:99px;padding:2px 10px;font-size:0.78rem;margin-left:8px;vertical-align:middle;">${orders.length}</span>
       </h3>
-      <div class="orders-grid">
+      <div style="display:flex;flex-direction:column;align-items:stretch;gap:0;">
         ${orders.map(o => `
-          <div class="order-card" id="pmt-${o._id}">
-            <!-- Header -->
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-              <b style="font-size:1.05rem;letter-spacing:0.5px;">#${o._id.slice(-6).toUpperCase()}</b>
-              <span class="order-status pending">⏳ AWAITING</span>
+          <div class="pmt-card" id="pmt-${o._id}">
+
+            <!-- ── Header ── -->
+            <div class="pmt-header">
+              <div>
+                <div style="font-size:0.65rem;opacity:0.4;letter-spacing:0.5px;">ORDER ID</div>
+                <b style="font-size:1.1rem;letter-spacing:0.5px;">#${o._id.slice(-6).toUpperCase()}</b>
+              </div>
+              <span class="order-status pending" style="font-size:0.72rem;">⏳ AWAITING</span>
             </div>
 
-            <!-- Customer -->
-            <div style="background:rgba(255,255,255,0.06);border-radius:8px;padding:8px 10px;margin-bottom:10px;">
-              <p style="font-weight:700;margin:0;">👤 ${o.user?.name || "N/A"}</p>
-              <p style="font-size:0.75rem;opacity:0.5;margin:3px 0 0;">${o.user?.email || ""}</p>
-              <p style="font-size:0.72rem;opacity:0.45;margin:2px 0 0;">🕐 ${new Date(o.createdAt).toLocaleString()}</p>
+            <!-- ── Customer info ── -->
+            <div class="pmt-section">
+              <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:4px;">
+                <div>
+                  <p style="font-weight:700;font-size:0.95rem;margin:0;">👤 ${o.user?.name || "N/A"}</p>
+                  ${o.user?.rollNumber ? `<p style="font-size:0.75rem;color:#f97316;font-family:monospace;margin:2px 0 0;">🎓 ${o.user.rollNumber}${o.user.branch ? " · " + o.user.branch : ""}</p>` : ""}
+                  <p style="font-size:0.72rem;opacity:0.45;margin:2px 0 0;">${o.user?.email || ""}</p>
+                </div>
+                <p style="font-size:0.72rem;opacity:0.4;margin:0;white-space:nowrap;">🕐 ${new Date(o.createdAt).toLocaleString()}</p>
+              </div>
             </div>
 
-            <!-- Items -->
-            <hr style="opacity:0.12;margin:0 0 8px;"/>
-            ${o.items.map(i => `
-              <div style="display:flex;justify-content:space-between;font-size:0.88rem;padding:2px 0;">
-                <span>• ${i.name} × ${i.quantity}</span>
-                <span style="opacity:0.75;">₹${i.price * i.quantity}</span>
-              </div>`).join("")}
-            <p style="font-weight:700;font-size:1rem;margin:8px 0;padding-top:8px;border-top:1px solid rgba(255,255,255,0.1);">
-              Total: ₹${o.totalAmount}
-            </p>
-
-            <!-- UTR Number — prominently displayed -->
-            ${o.paymentUtrNote ? `
-              <div style="background:rgba(249,115,22,0.12);border:1px solid rgba(249,115,22,0.35);border-radius:8px;padding:8px 12px;margin-bottom:10px;">
-                <p style="font-size:0.72rem;opacity:0.6;margin:0 0 2px;">UTR / Transaction ID</p>
-                <p style="font-size:1rem;font-weight:700;color:#f97316;font-family:monospace;margin:0;letter-spacing:0.5px;">
-                  ${o.paymentUtrNote}
-                </p>
-              </div>` : `
-              <p style="opacity:0.4;font-size:0.82rem;margin-bottom:8px;">🔖 No UTR provided</p>`}
-
-            ${o.notes ? `<p style="font-size:0.8rem;opacity:0.55;margin-bottom:10px;">📝 ${o.notes}</p>` : ""}
-
-            <!-- Screenshot — large and clickable -->
-            ${o.paymentScreenshot ? `
-              <a href="${o.paymentScreenshot}" target="_blank" rel="noopener"
-                 style="display:block;margin-bottom:6px;">
-                <img src="${o.paymentScreenshot}" alt="Payment screenshot"
-                     style="width:100%;max-height:260px;object-fit:contain;border-radius:12px;
-                            border:2px solid rgba(249,115,22,0.5);cursor:pointer;
-                            background:rgba(255,255,255,0.04);"
-                     onerror="this.parentElement.innerHTML='<p style=\'opacity:0.4;font-size:0.82rem;\'>⚠️ Screenshot failed to load</p>'"/>
-              </a>
-              <p style="font-size:0.72rem;opacity:0.4;margin-bottom:12px;text-align:center;">
-                📷 Tap screenshot to open full size
-              </p>` : `
-              <div style="border:2px dashed rgba(249,115,22,0.25);border-radius:10px;padding:16px;text-align:center;margin-bottom:12px;opacity:0.5;">
-                ⚠️ No screenshot uploaded
-              </div>`}
-
-            <!-- Approve / Reject -->
-            <div style="display:flex;gap:8px;">
-              <button class="btn-primary" style="flex:1;background:#2D6A4F;padding:10px;"
-                onclick="verifyUpiPayment('${o._id}', true)">✅ Approve</button>
-              <button class="btn-primary" style="flex:1;background:#e63946;padding:10px;"
-                onclick="verifyUpiPayment('${o._id}', false)">❌ Reject</button>
+            <!-- ── Items + Total ── -->
+            <div class="pmt-section">
+              ${o.items.map(i => `
+                <div style="display:flex;justify-content:space-between;font-size:0.88rem;padding:2px 0;">
+                  <span>• ${i.name} × ${i.quantity}</span>
+                  <span style="opacity:0.75;">₹${i.price * i.quantity}</span>
+                </div>`).join("")}
+              <div style="display:flex;justify-content:space-between;font-weight:800;font-size:1rem;margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.08);">
+                <span>Total</span><span>₹${o.totalAmount}</span>
+              </div>
             </div>
+
+            <!-- ── UTR / Transaction ID ── -->
+            <div class="pmt-section">
+              ${o.paymentUtrNote ? `
+                <div class="pmt-utr-box">
+                  <p class="pmt-utr-label">🔖 UTR / Transaction ID</p>
+                  <p class="pmt-utr-value">${o.paymentUtrNote}</p>
+                </div>` : `
+                <div style="display:flex;align-items:center;gap:8px;opacity:0.4;">
+                  <span style="font-size:1.2rem;">🔖</span>
+                  <span style="font-size:0.85rem;">No UTR number provided by student</span>
+                </div>`}
+              ${o.notes ? `<p style="font-size:0.8rem;opacity:0.5;margin:8px 0 0;">📝 ${o.notes}</p>` : ""}
+            </div>
+
+            <!-- ── Payment Screenshot ── -->
+            <div class="pmt-section" style="padding:0;">
+              ${o.paymentScreenshot ? `
+                <a href="${o.paymentScreenshot}" target="_blank" rel="noopener" class="pmt-screenshot-wrap">
+                  <img
+                    src="${o.paymentScreenshot}"
+                    alt="Payment screenshot"
+                    class="pmt-screenshot-img"
+                    onerror="this.parentElement.outerHTML='<div style=\"padding:16px;text-align:center;opacity:0.4;font-size:0.85rem;\">⚠️ Screenshot failed to load — <a href=\\"${o.paymentScreenshot}\\" target=\\"_blank\\" style=\\"color:#f97316;\\">Open directly</a></div>'"
+                  />
+                </a>
+                <p class="pmt-screenshot-hint">📷 Tap to open full size</p>` : `
+                <div class="pmt-section">
+                  <div class="pmt-no-screenshot">
+                    <div style="font-size:2rem;margin-bottom:6px;">📷</div>
+                    <p style="margin:0;">No screenshot uploaded</p>
+                  </div>
+                </div>`}
+            </div>
+
+            <!-- ── Action Buttons ── -->
+            <div class="pmt-actions">
+              <button class="pmt-btn pmt-btn-approve" onclick="verifyUpiPayment('${o._id}', true)">
+                ✅ Approve & Confirm
+              </button>
+              <button class="pmt-btn pmt-btn-reject" onclick="verifyUpiPayment('${o._id}', false)">
+                ❌ Reject
+              </button>
+            </div>
+
           </div>`).join("")}
       </div>`;
   } catch (err) {
     console.error("loadAdminPayments:", err);
-    if (!content.innerHTML.includes("orders-grid"))
-      content.innerHTML = "<p style='padding:2rem;'>Failed to load. Retrying...</p>";
+    if (!content.querySelector(".pmt-card"))
+      content.innerHTML = "<p style='padding:2rem;text-align:center;'>Failed to load payments. <button class='btn-secondary' onclick='loadAdminPayments()'>Retry</button></p>";
   }
 }
 
@@ -1680,6 +1820,13 @@ document.addEventListener("DOMContentLoaded", () => {
   updateCartUI();
   updateLunchBanner();
   setInterval(updateLunchBanner, 60000);
+
+  // If user is already logged in from a previous session, auto-request notif permission
+  const _existingUser = JSON.parse(localStorage.getItem("user") || "null");
+  if (_existingUser) {
+    // Small delay so page finishes loading first
+    setTimeout(_autoRequestNotifPermission, 1500);
+  }
 
   document.getElementById("miImageFile")?.addEventListener("change", function() {
     const file = this.files[0]; if (!file) return;
