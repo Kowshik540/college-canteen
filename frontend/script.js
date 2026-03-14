@@ -195,10 +195,22 @@ function updateNavbar() {
   if (adminBtn)  adminBtn.style.display  = user.role === "admin" ? "inline-block" : "none";
   const profileBtn = document.getElementById("profileBtn");
   if (profileBtn) profileBtn.style.display = user.role === "user" ? "inline-block" : "none";
+
+  // Mobile bottom nav — show for student users only
+  const mobileNav = document.getElementById("mobileBottomNav");
+  if (mobileNav) {
+    mobileNav.style.display = (user && user.role === "user") ? "flex" : "none";
+  }
 }
 
 function logout() {
+  // Clear all page intervals before logging out
+  if (_ordersPageInterval)  { clearInterval(_ordersPageInterval);  _ordersPageInterval  = null; }
+  if (_profilePageInterval) { clearInterval(_profilePageInterval); _profilePageInterval = null; }
   localStorage.clear(); cart = [];
+  // Hide mobile bottom nav on logout
+  const mobileNav = document.getElementById("mobileBottomNav");
+  if (mobileNav) mobileNav.style.display = "none";
   showPage("mainPage"); updateNavbar(); updateCartUI(); loadMenu();
 }
 
@@ -448,6 +460,9 @@ function updateCartUI() {
 
   const total = cart.reduce((s, i) => s + i.qty, 0);
   cartBadge.textContent = total;
+  // Sync mobile cart badge
+  const mobBadge = document.getElementById("mobCartBadge");
+  if (mobBadge) mobBadge.textContent = total;
 
   if (!cartBody) return;
   if (!cart.length) {
@@ -1006,25 +1021,27 @@ const _laneOf = status => {
   return null;
 };
 
+// ── Admin orders: duplicate-free, diff-patch, 1-second real-time ──
+let _adminOrdersRendering = false;  // prevent overlapping renders
+
 async function loadAdminOrders() {
+  // Skip if a render is already in-flight (prevents race-condition duplicates)
+  if (_adminOrdersRendering) return;
+  _adminOrdersRendering = true;
+
   const container = document.getElementById("adminContent");
-  if (!container) return;
+  if (!container) { _adminOrdersRendering = false; return; }
+
+  // Guard: if the container has been taken over by another tab, bail out
+  if (container.dataset.tab && container.dataset.tab !== "orders") {
+    _adminOrdersRendering = false; return;
+  }
+  container.dataset.tab = "orders";
 
   try {
     const res    = await fetch(`${API}/api/admin/orders?limit=100`, { headers: getAuthHeaders() });
     const data   = await res.json();
     const active = (data.orders || []).filter(o => _laneOf(o.status));
-
-    if (!active.length) {
-      container.innerHTML = '<div style="text-align:center;padding:3rem;opacity:0.4;font-size:1.3rem;">🎉 No active orders right now</div>';
-      _ordersCache.clear();
-      return;
-    }
-
-    if (!container.querySelector(".order-section")) {
-      container.innerHTML = "";
-      _ordersCache.clear();
-    }
 
     const laneConfig = {
       new:       { title: "New Orders",   icon: "⏳", color: "#f97316", next: "preparing", label: "🍳 Start Preparing" },
@@ -1032,8 +1049,26 @@ async function loadAdminOrders() {
       ready:     { title: "Ready Pickup", icon: "🔔", color: "#048A81", next: "delivered", label: "🎉 Delivered"        },
     };
 
+    // ── EMPTY STATE ──
+    if (!active.length) {
+      // Only wipe if not already showing empty state (prevents flicker)
+      if (!container.querySelector(".orders-empty")) {
+        container.innerHTML = '<div class="orders-empty" style="text-align:center;padding:3rem;opacity:0.4;font-size:1.3rem;">🎉 No active orders right now</div>';
+        _ordersCache.clear();
+      }
+      _adminOrdersRendering = false;
+      return;
+    }
+
+    // If switching from empty state or another tab, reset cleanly
+    if (container.querySelector(".orders-empty") || !container.querySelector(".order-section")) {
+      container.innerHTML = "";
+      _ordersCache.clear();
+    }
+
     const activeIds = new Set(active.map(o => o._id));
 
+    // ── REMOVE orders no longer active ──
     _ordersCache.forEach((cached, oid) => {
       if (!activeIds.has(oid)) {
         const card = document.getElementById(`order-${oid}`);
@@ -1042,41 +1077,60 @@ async function loadAdminOrders() {
       }
     });
 
+    // ── ENSURE sections exist (idempotent) ──
+    Object.entries(laneConfig).forEach(([id, cfg]) => {
+      _ensureSection(container, id, cfg.title, cfg.icon, cfg.color);
+    });
+
+    // ── PROCESS each active order ──
     active.forEach(o => {
       const newLane  = _laneOf(o.status);
       const cfg      = laneConfig[newLane];
-      const section  = _ensureSection(container, newLane, cfg.title, cfg.icon, cfg.color);
       const grid     = document.getElementById(`grid-${newLane}`);
-      const cached   = _ordersCache.get(o._id);
+      if (!grid) return;
+
+      const cached       = _ordersCache.get(o._id);
       const existingCard = document.getElementById(`order-${o._id}`);
 
-      if (!cached) {
-        const div   = document.createElement("div");
+      if (!existingCard && !cached) {
+        // Brand new — insert once
+        const div = document.createElement("div");
         div.innerHTML = _buildOrderCard(o, cfg.next, cfg.label, cfg.color);
         _animateCardIn(div.firstElementChild, grid);
         _ordersCache.set(o._id, { status: o.status, lane: newLane });
 
-      } else if (cached.status !== o.status) {
-        if (cached.lane !== newLane) {
-          if (existingCard) {
+      } else if (existingCard && cached) {
+        if (cached.status !== o.status || cached.lane !== newLane) {
+          if (cached.lane !== newLane) {
+            // Lane changed — move card: remove from old, add to new
             _animateCardOut(existingCard, () => {
               const div = document.createElement("div");
               div.innerHTML = _buildOrderCard(o, cfg.next, cfg.label, cfg.color);
               _animateCardIn(div.firstElementChild, grid);
             });
-          }
-        } else {
-          if (existingCard) {
+          } else {
+            // Same lane — patch status badge only (no rebuild, no flicker)
             const badge = existingCard.querySelector(".order-status");
-            if (badge) { badge.className = `order-status ${o.status}`; badge.textContent = o.status.toUpperCase(); }
+            if (badge) {
+              badge.className   = `order-status ${o.status}`;
+              badge.textContent = o.status.toUpperCase();
+            }
             existingCard.dataset.status = o.status;
           }
+          _ordersCache.set(o._id, { status: o.status, lane: newLane });
         }
+        // status unchanged → zero DOM work
+      } else if (!existingCard && cached) {
+        // Cache says it exists but DOM doesn't — rebuild (tab was cleared)
+        const div = document.createElement("div");
+        div.innerHTML = _buildOrderCard(o, cfg.next, cfg.label, cfg.color);
+        _animateCardIn(div.firstElementChild, grid);
         _ordersCache.set(o._id, { status: o.status, lane: newLane });
       }
     });
 
-    Object.entries(laneConfig).forEach(([id, cfg]) => {
+    // ── UPDATE section counts + visibility ──
+    Object.entries(laneConfig).forEach(([id]) => {
       const section = document.getElementById(`section-${id}`);
       const grid    = document.getElementById(`grid-${id}`);
       const countEl = document.getElementById(`count-${id}`);
@@ -1087,6 +1141,7 @@ async function loadAdminOrders() {
     });
 
   } catch(err) { console.error("loadAdminOrders:", err); }
+  finally { _adminOrdersRendering = false; }
 }
 
 async function updateOrderStatus(id, status, btn) {
@@ -1121,8 +1176,9 @@ function setAdminTab(tab) {
     document.querySelectorAll(".admin-tab")[tabMap[tab]]?.classList.add("active");
 
   const content = document.getElementById("adminContent");
-  if (content) content.innerHTML = "";
+  if (content) { content.innerHTML = ""; content.dataset.tab = tab; }
   _ordersCache.clear();
+  _adminOrdersRendering = false;  // reset render lock when switching tabs
 
   if (tab === "orders")   loadAdminOrders();
   if (tab === "payments") loadAdminPayments();
@@ -1136,6 +1192,9 @@ function setAdminTab(tab) {
 async function loadAdminPayments() {
   const content = document.getElementById("adminContent");
   if (!content) return;
+  // Guard: only render if this tab is still active
+  if (content.dataset.tab && content.dataset.tab !== "payments") return;
+  content.dataset.tab = "payments";
   content.innerHTML = "<p style='text-align:center;padding:2rem;opacity:0.5;'>Loading...</p>";
 
   try {
