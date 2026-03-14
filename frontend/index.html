@@ -329,7 +329,7 @@
         <label class="form-label">💳 Payment Method</label>
         <div class="payment-method-row">
           <label class="payment-option" id="payOnlineOpt">
-            <input type="radio" name="paymentMethod" value="online" id="payOnline"/>
+            <input type="radio" name="paymentMethod" value="online" id="payOnline" checked/>
             <div class="payment-option-inner">
               <span class="pay-icon">📱</span>
               <span class="pay-label">Pay via UPI</span>
@@ -337,7 +337,7 @@
             </div>
           </label>
           <!-- <label class="payment-option" id="payCashOpt">
-            <input type="radio" name="paymentMethod" value="cash" id="payCash" checked/>
+            <input type="radio" name="paymentMethod" value="cash" id="payCash"/>
             <div class="payment-option-inner">
               <span class="pay-icon">💵</span>
               <span class="pay-label">Cash on Pickup</span>
@@ -574,11 +574,22 @@
           Pay <span id="upiAmountDisplay" style="color:#f97316;"></span>
         </p>
 
-        <!-- ★ Replace upi-qr.png with your actual QR image in public/images/ -->
-        <img src="https://drive.google.com/uc?export=view&id=1uCwLe7tOrAxnAGbSOCaeDM4g5b5OftU1" alt="UPI QR Code"
-             style="width:200px;height:200px;border-radius:14px;border:3px solid #f97316;
-                    display:block;margin:0 auto 16px;object-fit:contain;background:#fff;padding:6px;"
-             onerror="this.style.background='#1a1a2e';this.alt='Put your QR at public/images/upi-qr.png'"/>
+        <!-- QR Code: place your QR image at frontend/images/upi-qr.png -->
+        <div id="upiQrWrapper" style="display:flex;flex-direction:column;align-items:center;margin:0 auto 16px;">
+          <img id="upiQrImg" src="/images/upi-qr.png" alt="UPI QR Code"
+               style="width:200px;height:200px;border-radius:14px;border:3px solid #f97316;
+                      display:block;object-fit:contain;background:#fff;padding:6px;"
+               onerror="this.style.display='none';document.getElementById('upiQrFallback').style.display='flex'"/>
+          <!-- Fallback shown if image is missing -->
+          <div id="upiQrFallback"
+               style="display:none;width:200px;height:200px;border-radius:14px;border:3px solid #f97316;
+                      background:#fff;align-items:center;justify-content:center;flex-direction:column;
+                      text-align:center;padding:12px;box-sizing:border-box;">
+            <div style="font-size:2.5rem;">📱</div>
+            <p style="color:#111;font-size:0.78rem;margin:6px 0 2px;font-weight:700;">Place your QR image at:</p>
+            <code style="color:#f97316;font-size:0.72rem;">frontend/images/upi-qr.png</code>
+          </div>
+        </div>
 
         <p style="font-size:0.85rem;opacity:0.5;margin-bottom:20px;">
           UPI ID: <b id="upiIdDisplay">yourcollege@upi</b>
@@ -644,6 +655,89 @@
 
 <!-- Toast -->
 <div class="toast" id="toast" role="alert"></div>
+
+<!-- Scripts -->
+
+<!-- ════════════════════════════════════════════════
+     MOBILE BOTTOM NAV BAR (student only, shown when logged in)
+     ════════════════════════════════════════════════ -->
+<nav class="mobile-bottom-nav" id="mobileBottomNav" style="display:none;">
+  <button class="mob-nav-btn" onclick="showPage('mainPage')" id="mobMenuBtn">
+    <span class="mob-nav-icon">🍽️</span>
+    <span>Menu</span>
+  </button>
+  <button class="mob-nav-btn" onclick="showPage('ordersPage')" id="mobOrdersBtn">
+    <span class="mob-nav-icon">📋</span>
+    <span>My Orders</span>
+  </button>
+  <button class="mob-nav-btn mob-cart-btn" onclick="openCart()" id="mobCartBtn">
+    <span class="mob-nav-icon">🛒<span class="mob-cart-badge" id="mobCartBadge">0</span></span>
+    <span>Cart</span>
+  </button>
+  <button class="mob-nav-btn" onclick="showPage('profilePage')" id="mobProfileBtn">
+    <span class="mob-nav-icon">👤</span>
+    <span>Profile</span>
+  </button>
+</nav>
+
+<style>
+/* ── Mobile bottom nav ── */
+.mobile-bottom-nav {
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  z-index: 1000;
+  background: rgba(15,15,30,0.97);
+  backdrop-filter: blur(16px);
+  border-top: 1px solid rgba(249,115,22,0.25);
+  display: flex !important;
+  justify-content: space-around;
+  align-items: stretch;
+  padding: 6px 0 env(safe-area-inset-bottom, 6px);
+  box-shadow: 0 -4px 24px rgba(0,0,0,0.35);
+}
+.mobile-bottom-nav[style*="display:none"] { display: none !important; }
+.mob-nav-btn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  background: none;
+  border: none;
+  color: rgba(255,255,255,0.55);
+  font-size: 0.65rem;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 4px 2px;
+  transition: color 0.2s;
+  min-height: 52px;
+}
+.mob-nav-btn:active, .mob-nav-btn.active { color: #f97316; }
+.mob-nav-icon { font-size: 1.4rem; line-height: 1; position: relative; display: inline-block; }
+.mob-cart-badge {
+  position: absolute;
+  top: -4px; right: -8px;
+  background: #f97316;
+  color: #fff;
+  font-size: 0.6rem;
+  font-weight: 700;
+  border-radius: 99px;
+  padding: 1px 5px;
+  min-width: 16px;
+  text-align: center;
+  line-height: 1.4;
+}
+/* Add bottom padding to pages so content not hidden behind nav */
+@media (max-width: 768px) {
+  .page.active { padding-bottom: 70px; }
+  /* Hide the desktop nav buttons on mobile to avoid clutter */
+  .nav { display: none !important; }
+}
+@media (min-width: 769px) {
+  .mobile-bottom-nav { display: none !important; }
+}
+</style>
 
 <!-- Scripts -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
