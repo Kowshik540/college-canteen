@@ -32,20 +32,22 @@ function isLunchBreakNow() {
 }
 
 function updateLunchBanner() {
-  const banner = document.getElementById("lunchBanner");
+  const banner   = document.getElementById("lunchBanner");
   const placeBtn = document.getElementById("placeOrderBtn");
+  const msgEl    = document.getElementById("lunchBannerMsg");
   if (!banner) return;
 
   if (isLunchBreakNow()) {
     banner.style.display = "flex";
+    if (msgEl) msgEl.textContent = "🍽️ Online ordering paused (1:10–2:00 PM) — Visit the canteen counter directly for lunch!";
     if (placeBtn) {
-      placeBtn.disabled   = true;
-      placeBtn.textContent = "🚫 Ordering closed (Lunch Break)";
+      placeBtn.disabled    = true;
+      placeBtn.textContent = "🚫 Visit Canteen (Lunch Break)";
     }
   } else {
     banner.style.display = "none";
     if (placeBtn) {
-      placeBtn.disabled   = false;
+      placeBtn.disabled    = false;
       placeBtn.textContent = "🎉 Place Order";
     }
   }
@@ -79,12 +81,10 @@ function showToast(msg, type = "info") {
 // ══════════════════════════════════════════════════
 // PAGE NAVIGATION
 // ══════════════════════════════════════════════════
-// Per-page fast-refresh intervals (cleared when navigating away)
 let _ordersPageInterval  = null;
 let _profilePageInterval = null;
 
 function showPage(id) {
-  // Stop any active per-page intervals from the previous page
   if (_ordersPageInterval)  { clearInterval(_ordersPageInterval);  _ordersPageInterval  = null; }
   if (_profilePageInterval) { clearInterval(_profilePageInterval); _profilePageInterval = null; }
 
@@ -97,14 +97,12 @@ function showPage(id) {
   }
   if (id === "ordersPage") {
     loadMyOrders();
-    // Refresh every 1 second — student sees food status update in real time
     _ordersPageInterval = setInterval(() => {
       if (!document.hidden) loadMyOrders();
     }, 1000);
   }
   if (id === "profilePage") {
     loadProfile();
-    // Refresh every 2 seconds — fast enough to see live stats
     _profilePageInterval = setInterval(() => {
       if (!document.hidden) loadProfile();
     }, 2000);
@@ -207,7 +205,6 @@ function logout() {
 // ══════════════════════════════════════════════════
 // PROFILE PAGE
 // ══════════════════════════════════════════════════
-// ── Profile auto-refresh state ──
 let _profileInterval = null;
 
 function _stopProfileRefresh() {
@@ -219,13 +216,11 @@ async function loadProfile() {
   const user    = JSON.parse(localStorage.getItem("user") || "null");
   if (!content || !user) return;
 
-  // Show skeleton only on first load
   if (!content.querySelector(".profile-card")) {
     content.innerHTML = "<p style='text-align:center;padding:2rem;opacity:0.5;'>Loading profile...</p>";
   }
 
   try {
-    // Fetch fresh user data + orders in parallel
     const [meRes, ordRes] = await Promise.all([
       fetch(`${API}/api/auth/me`, { headers: getAuthHeaders() }),
       fetch(`${API}/api/orders/my`, { headers: getAuthHeaders() }),
@@ -233,18 +228,15 @@ async function loadProfile() {
     const u      = (await meRes.json()).user || user;
     const orders = (await ordRes.json()).orders || [];
 
-    // Compute spent from actual delivered orders belonging to this student only
     const delivered = orders.filter(o => o.status === "delivered");
     const spent     = delivered.reduce((s, o) => s + o.totalAmount, 0);
     const active    = orders.filter(o => ["pending","confirmed","preparing","ready"].includes(o.status));
 
-    // ── Build full profile HTML (first time or full refresh) ──
     if (!content.querySelector(".profile-card")) {
       content.innerHTML = _buildProfileHTML(u, orders, delivered, spent, active);
       return;
     }
 
-    // ── Diff-patch subsequent refreshes (no flicker) ──
     _patchText("prof-name",     u.name);
     _patchText("prof-email",    u.email);
     _patchText("prof-roll",     u.rollNumber ? `🎓 ${u.rollNumber}${u.branch ? " · " + u.branch : ""}` : "");
@@ -253,13 +245,11 @@ async function loadProfile() {
     _patchText("prof-stat-spent",     `₹${spent.toLocaleString("en-IN")}`);
     _patchText("prof-stat-completed", String(delivered.length));
 
-    // Active order status pill — update in place
     if (active.length > 0) {
       const pill = document.getElementById("prof-active-pill");
       if (pill) {
         pill.textContent = `⏳ ${active.length} order${active.length > 1 ? "s" : ""} active`;
       } else {
-        // Pill didn't exist yet — do a full rebuild to add it
         content.innerHTML = _buildProfileHTML(u, orders, delivered, spent, active);
         return;
       }
@@ -268,7 +258,6 @@ async function loadProfile() {
       if (pill) pill.textContent = "";
     }
 
-    // Re-render recent orders list (they change status)
     const recentList = document.getElementById("prof-recent-orders");
     if (recentList) recentList.innerHTML = _buildRecentOrders(orders);
 
@@ -443,6 +432,12 @@ function removeFromCart(id) {
 function saveCart()     { localStorage.setItem("cart", JSON.stringify(cart)); }
 function getCartTotal() { return cart.reduce((s, i) => s + i.price * i.qty, 0); }
 
+function updateCartBadge() {
+  const cartBadge = document.getElementById("cartBadge");
+  if (!cartBadge) return;
+  cartBadge.textContent = cart.reduce((s, i) => s + i.qty, 0);
+}
+
 function updateCartUI() {
   const cartBody   = document.getElementById("cartBody");
   const cartBadge  = document.getElementById("cartBadge");
@@ -502,7 +497,7 @@ async function placeOrder() {
   if (!pickupTime) { showToast("Please select a pickup time", "error"); return; }
 
   if (paymentMethod === "online") {
-    openUpiModal(pickupTime);   // show QR → upload screenshot flow
+    openUpiModal(pickupTime);
   } else {
     await placeOrderCash(pickupTime);
   }
@@ -531,11 +526,11 @@ async function placeOrderCash(pickupTime) {
 // UPI / PHONEPE QR PAYMENT FLOW
 // ══════════════════════════════════════════════════
 
-// ★ Set your actual UPI ID here
-const UPI_ID = "const UPI_ID = "9440487580@upi or 9440487580-3@axl";
+// ★ FIX 1: Corrected UPI_ID string (was broken with nested quotes)
+const UPI_ID = "9440487580@upi";
 
-let _upiPickupTime   = "";
-let _upiPendingOrder = null;  // order created before screenshot upload
+let _upiPickupTime    = "";
+let _upiPendingOrder  = null;
 let _upiScreenshotFile = null;
 
 function openUpiModal(pickupTime) {
@@ -543,7 +538,6 @@ function openUpiModal(pickupTime) {
   _upiPendingOrder  = null;
   _upiScreenshotFile = null;
 
-  // Reset UI
   document.getElementById("upiStep1").style.display = "block";
   document.getElementById("upiStep2").style.display = "none";
   document.getElementById("upiAmountDisplay").textContent = "₹" + getCartTotal();
@@ -598,7 +592,6 @@ async function submitUpiPayment() {
   if (btn) { btn.disabled = true; btn.textContent = "Placing order..."; }
 
   try {
-    // Step 1 — create the order (paymentMethod=online, status=pending, paymentStatus=unpaid)
     const orderRes  = await fetch(`${API}/api/orders`, {
       method: "POST", headers: getAuthHeaders(),
       body: JSON.stringify({
@@ -616,7 +609,6 @@ async function submitUpiPayment() {
     }
     _upiPendingOrder = orderData.order;
 
-    // Step 2 — upload the screenshot
     if (btn) btn.textContent = "Uploading screenshot...";
     const formData = new FormData();
     formData.append("screenshot", _upiScreenshotFile);
@@ -634,7 +626,6 @@ async function submitUpiPayment() {
       return;
     }
 
-    // Success — clear cart and show confirmation screen
     cart = []; saveCart(); updateCartUI(); closeCart();
     document.getElementById("upiStep1").style.display = "none";
     document.getElementById("upiStep2").style.display = "block";
@@ -646,7 +637,7 @@ async function submitUpiPayment() {
 }
 
 // ══════════════════════════════════════════════════
-// LEGACY (unused — kept for reference)
+// LEGACY Razorpay (unused — kept for reference)
 // ══════════════════════════════════════════════════
 async function placeOrderWithRazorpay(pickupTime) {
   const btn = document.getElementById("placeOrderBtn");
@@ -655,7 +646,6 @@ async function placeOrderWithRazorpay(pickupTime) {
   try {
     const total = getCartTotal();
 
-    // 1. Create Razorpay order on backend
     const rzpRes  = await fetch(`${API}/api/orders/create-razorpay`, {
       method: "POST", headers: getAuthHeaders(),
       body: JSON.stringify({ amount: total }),
@@ -663,7 +653,6 @@ async function placeOrderWithRazorpay(pickupTime) {
     const rzpData = await rzpRes.json();
     if (!rzpRes.ok) { showToast(rzpData.error || "Payment init failed", "error"); return; }
 
-    // 2. Create the canteen order first (unpaid)
     const orderRes  = await fetch(`${API}/api/orders`, {
       method: "POST", headers: getAuthHeaders(),
       body: JSON.stringify({
@@ -677,9 +666,8 @@ async function placeOrderWithRazorpay(pickupTime) {
     const canteenOrderId = orderData.order._id;
     const user = JSON.parse(localStorage.getItem("user") || "{}");
 
-    // 3. Open Razorpay checkout
     const options = {
-      key:      rzpData.razorpayOrder.key_id || "",   // filled by Razorpay
+      key:      rzpData.razorpayOrder.key_id || "",
       amount:   rzpData.razorpayOrder.amount,
       currency: "INR",
       name:     "CampusBites",
@@ -688,7 +676,6 @@ async function placeOrderWithRazorpay(pickupTime) {
       prefill:  { name: user.name, email: user.email },
       theme:    { color: "#f97316" },
       handler: async function(response) {
-        // 4. Verify payment on backend
         const verRes  = await fetch(`${API}/api/orders/${canteenOrderId}/verify-payment`, {
           method: "POST", headers: getAuthHeaders(),
           body: JSON.stringify({
@@ -723,14 +710,12 @@ async function placeOrderWithRazorpay(pickupTime) {
 // ══════════════════════════════════════════════════
 const STATUS_EMOJI = { pending:"⏳", confirmed:"✅", preparing:"🍳", ready:"🔔", delivered:"🎉", cancelled:"❌" };
 
-// ── Per-order status cache for diff-based updates ──
 const _myOrdersCache = new Map();
 
 async function loadMyOrders() {
   const list = document.getElementById("ordersList");
   if (!list) return;
 
-  // Only show skeleton on very first load (empty container)
   if (!list.querySelector(".order-card")) {
     list.innerHTML = "<p id='orders-loading' style='text-align:center;opacity:0.5;'>Loading...</p>";
   }
@@ -746,12 +731,10 @@ async function loadMyOrders() {
       return;
     }
 
-    // Remove loading placeholder if present
     document.getElementById("orders-loading")?.remove();
 
     const incomingIds = new Set(orders.map(o => o._id));
 
-    // Remove cards that no longer exist
     list.querySelectorAll(".order-card[data-oid]").forEach(card => {
       if (!incomingIds.has(card.dataset.oid)) card.remove();
     });
@@ -762,25 +745,21 @@ async function loadMyOrders() {
       const isOnline  = o.paymentMethod === "online";
       const isPending = o.paymentStatus === "awaiting_verification";
 
-      // Payment label — show verification status for UPI orders
       let payLabel = isOnline ? "💳 UPI" : "💵 Cash";
-      if (isOnline && isPending)             payLabel = "⏳ Payment verifying...";
-      else if (isOnline && o.paymentStatus === "paid") payLabel = "✅ UPI Paid";
-      else if (o.paymentStatus === "rejected")          payLabel = "❌ Payment rejected";
+      if (isOnline && isPending)                         payLabel = "⏳ Payment verifying...";
+      else if (isOnline && o.paymentStatus === "paid")   payLabel = "✅ UPI Paid";
+      else if (o.paymentStatus === "rejected")           payLabel = "❌ Payment rejected";
 
       if (!existing) {
-        // Brand new card — build and insert
         const div   = document.createElement("div");
         div.innerHTML = _buildMyOrderCard(o, active, payLabel);
         const card  = div.firstElementChild;
-        // Insert at correct position
         const refNode = list.children[idx] || null;
         list.insertBefore(card, refNode);
         _myOrdersCache.set(o._id, o.status + "|" + o.paymentStatus);
       } else {
         const cacheKey = o.status + "|" + o.paymentStatus;
         if (_myOrdersCache.get(o._id) !== cacheKey) {
-          // Only patch the parts that changed — NO full rebuild
           const badge = existing.querySelector(".order-status");
           if (badge) {
             badge.className   = `order-status ${o.status}`;
@@ -792,7 +771,6 @@ async function loadMyOrders() {
           if (btnRow) btnRow.innerHTML = _buildMyOrderButtons(o, active);
           _myOrdersCache.set(o._id, cacheKey);
         }
-        // else nothing changed — skip entirely, zero DOM work
       }
     });
 
@@ -843,13 +821,11 @@ async function cancelOrder(id) {
 // ══════════════════════════════════════════════════
 // ADMIN — STATS DASHBOARD
 // ══════════════════════════════════════════════════
-// Helper: set text of element by id without rebuilding DOM
 function _setText(id, val) {
   const el = document.getElementById(id);
   if (el && el.textContent !== String(val)) el.textContent = val;
 }
 
-// First-time stats skeleton — only built once
 function _buildStatsSkeleton() {
   const defs = [
     { container: "adminStats", cards: [
@@ -892,7 +868,6 @@ async function loadAdminStats() {
     const data = await res.json();
     const s    = data.stats || {};
 
-    // Update only the number values — no DOM wipe, no flicker
     _setText("stat-pending",      s.pendingOrders  || 0);
     _setText("stat-preparing",    s.preparingOrders|| 0);
     _setText("stat-ready",        s.readyOrders    || 0);
@@ -948,11 +923,8 @@ function renderMonthlyTable(breakdown) {
 // ══════════════════════════════════════════════════
 // ADMIN — ORDERS (3-phase pipeline)
 // ══════════════════════════════════════════════════
+const _ordersCache = new Map();
 
-// lane each order belongs to, keyed by order._id
-const _ordersCache = new Map();   // orderId → { status, lane }
-
-// ── Build the HTML for one order card ────────────
 function _buildOrderCard(o, next, btnLabel, color) {
   const displayName = o.customerName
     || (o.user && typeof o.user === "object" && o.user.name)
@@ -993,7 +965,6 @@ function _buildOrderCard(o, next, btnLabel, color) {
     </div>`;
 }
 
-// ── Ensure a lane section exists in the container ─
 function _ensureSection(container, id, title, icon, color) {
   let section = document.getElementById(`section-${id}`);
   if (!section) {
@@ -1010,7 +981,6 @@ function _ensureSection(container, id, title, icon, color) {
   return section;
 }
 
-// ── Helper: animate a card into a grid ───────────
 function _animateCardIn(card, grid) {
   card.style.opacity   = "0";
   card.style.transform = "scale(0.95)";
@@ -1022,7 +992,6 @@ function _animateCardIn(card, grid) {
   });
 }
 
-// ── Helper: animate a card out and remove it ─────
 function _animateCardOut(card, cb) {
   card.style.transition = "opacity 0.25s, transform 0.25s";
   card.style.opacity    = "0";
@@ -1046,20 +1015,17 @@ async function loadAdminOrders() {
     const data   = await res.json();
     const active = (data.orders || []).filter(o => _laneOf(o.status));
 
-    // ── EMPTY STATE ───────────────────────────────
     if (!active.length) {
       container.innerHTML = '<div style="text-align:center;padding:3rem;opacity:0.4;font-size:1.3rem;">🎉 No active orders right now</div>';
       _ordersCache.clear();
       return;
     }
 
-    // If container only has the empty message, clear it to start fresh
     if (!container.querySelector(".order-section")) {
       container.innerHTML = "";
       _ordersCache.clear();
     }
 
-    // ── LANE CONFIG ───────────────────────────────
     const laneConfig = {
       new:       { title: "New Orders",   icon: "⏳", color: "#f97316", next: "preparing", label: "🍳 Start Preparing" },
       preparing: { title: "Preparing",    icon: "🍳", color: "#0d6efd", next: "ready",     label: "🔔 Mark Ready"      },
@@ -1068,7 +1034,6 @@ async function loadAdminOrders() {
 
     const activeIds = new Set(active.map(o => o._id));
 
-    // ── REMOVE gone orders ─────────────────────────
     _ordersCache.forEach((cached, oid) => {
       if (!activeIds.has(oid)) {
         const card = document.getElementById(`order-${oid}`);
@@ -1077,7 +1042,6 @@ async function loadAdminOrders() {
       }
     });
 
-    // ── PROCESS each order ────────────────────────
     active.forEach(o => {
       const newLane  = _laneOf(o.status);
       const cfg      = laneConfig[newLane];
@@ -1087,26 +1051,21 @@ async function loadAdminOrders() {
       const existingCard = document.getElementById(`order-${o._id}`);
 
       if (!cached) {
-        // Brand-new order — build and insert
         const div   = document.createElement("div");
         div.innerHTML = _buildOrderCard(o, cfg.next, cfg.label, cfg.color);
         _animateCardIn(div.firstElementChild, grid);
         _ordersCache.set(o._id, { status: o.status, lane: newLane });
 
       } else if (cached.status !== o.status) {
-        // Status changed — check if lane also changed
         if (cached.lane !== newLane) {
-          // ── Move card to new lane: remove from old, add to new ──
           if (existingCard) {
             _animateCardOut(existingCard, () => {
-              // Rebuild card with new button/color for new lane
               const div = document.createElement("div");
               div.innerHTML = _buildOrderCard(o, cfg.next, cfg.label, cfg.color);
               _animateCardIn(div.firstElementChild, grid);
             });
           }
         } else {
-          // Same lane, just update the status badge in-place
           if (existingCard) {
             const badge = existingCard.querySelector(".order-status");
             if (badge) { badge.className = `order-status ${o.status}`; badge.textContent = o.status.toUpperCase(); }
@@ -1115,10 +1074,8 @@ async function loadAdminOrders() {
         }
         _ordersCache.set(o._id, { status: o.status, lane: newLane });
       }
-      // cached.status === o.status → nothing changed, zero DOM work
     });
 
-    // ── UPDATE section counts + visibility ────────
     Object.entries(laneConfig).forEach(([id, cfg]) => {
       const section = document.getElementById(`section-${id}`);
       const grid    = document.getElementById(`grid-${id}`);
@@ -1132,7 +1089,6 @@ async function loadAdminOrders() {
   } catch(err) { console.error("loadAdminOrders:", err); }
 }
 
-// ── Admin clicks a phase button ───────────────────
 async function updateOrderStatus(id, status, btn) {
   if (btn) { btn.disabled = true; btn.textContent = "Updating..."; }
   try {
@@ -1145,10 +1101,7 @@ async function updateOrderStatus(id, status, btn) {
       return;
     }
     showToast(`Order moved to ${status} ✅`, "success");
-
-    // If delivered/cancelled — card will be removed on next poll
-    // Force an immediate poll so it happens right away
-    _ordersCache.delete(id);   // clear cache so next loadAdminOrders sees it fresh
+    _ordersCache.delete(id);
     await loadAdminOrders();
     loadAdminStats();
   } catch {
@@ -1167,8 +1120,6 @@ function setAdminTab(tab) {
   if (tabMap[tab] !== undefined)
     document.querySelectorAll(".admin-tab")[tabMap[tab]]?.classList.add("active");
 
-  // Always wipe the shared content area and reset order cache when switching tabs
-  // This ensures no stale DOM from a previous tab bleeds through
   const content = document.getElementById("adminContent");
   if (content) content.innerHTML = "";
   _ordersCache.clear();
@@ -1192,22 +1143,14 @@ async function loadAdminPayments() {
     const data = await res.json();
     const orders = data.orders || [];
 
-    // Update badge count
     const badge = document.getElementById("pendingPaymentsBadge");
     if (badge) {
-      if (orders.length) {
-        badge.textContent     = orders.length;
-        badge.style.display   = "inline";
-      } else {
-        badge.style.display   = "none";
-      }
+      if (orders.length) { badge.textContent = orders.length; badge.style.display = "inline"; }
+      else               { badge.style.display = "none"; }
     }
 
     if (!orders.length) {
-      content.innerHTML = `
-        <div style="text-align:center;padding:3rem;opacity:0.4;font-size:1.1rem;">
-          ✅ No pending payment verifications
-        </div>`;
+      content.innerHTML = `<div style="text-align:center;padding:3rem;opacity:0.4;font-size:1.1rem;">✅ No pending payment verifications</div>`;
       return;
     }
 
@@ -1229,7 +1172,6 @@ async function loadAdminPayments() {
             <p style="font-weight:700;margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.1);">Total: ₹${o.totalAmount}</p>
             ${o.paymentUtrNote ? `<p style="font-size:0.8rem;opacity:0.6;margin-top:4px;">🔖 UTR: ${o.paymentUtrNote}</p>` : ""}
             ${o.notes ? `<p style="font-size:0.8rem;opacity:0.55;">📝 ${o.notes}</p>` : ""}
-
             ${o.paymentScreenshot ? `
               <a href="${o.paymentScreenshot}" target="_blank" rel="noopener">
                 <img src="${o.paymentScreenshot}" alt="Payment screenshot"
@@ -1239,16 +1181,9 @@ async function loadAdminPayments() {
               </a>
               <p style="font-size:0.75rem;opacity:0.4;margin-bottom:10px;">Tap image to open full size</p>
             ` : `<p style="opacity:0.4;font-size:0.85rem;margin:10px 0;">⚠️ No screenshot uploaded</p>`}
-
             <div style="display:flex;gap:8px;margin-top:4px;">
-              <button class="btn-primary" style="flex:1;background:#2D6A4F;"
-                onclick="verifyUpiPayment('${o._id}', true)">
-                ✅ Approve & Confirm
-              </button>
-              <button class="btn-primary" style="flex:1;background:#e63946;"
-                onclick="verifyUpiPayment('${o._id}', false)">
-                ❌ Reject
-              </button>
+              <button class="btn-primary" style="flex:1;background:#2D6A4F;" onclick="verifyUpiPayment('${o._id}', true)">✅ Approve & Confirm</button>
+              <button class="btn-primary" style="flex:1;background:#e63946;" onclick="verifyUpiPayment('${o._id}', false)">❌ Reject</button>
             </div>
           </div>`).join("")}
       </div>`;
@@ -1260,10 +1195,7 @@ async function loadAdminPayments() {
 
 async function verifyUpiPayment(orderId, approved) {
   const card = document.getElementById(`pmt-${orderId}`);
-  if (card) {
-    card.style.opacity       = "0.5";
-    card.style.pointerEvents = "none";
-  }
+  if (card) { card.style.opacity = "0.5"; card.style.pointerEvents = "none"; }
   try {
     const res  = await fetch(`${API}/api/orders/${orderId}/verify-payment`, {
       method: "PATCH", headers: getAuthHeaders(),
@@ -1281,8 +1213,6 @@ async function verifyUpiPayment(orderId, approved) {
       approved ? "success" : "info"
     );
 
-    // After approval, the order status becomes "confirmed" so it shows in Admin Orders tab
-    // Animate card out and refresh both payments + orders pipeline
     if (card) {
       card.style.transition = "opacity 0.4s, transform 0.4s";
       card.style.transform  = "scale(0.9)";
@@ -1290,11 +1220,7 @@ async function verifyUpiPayment(orderId, approved) {
       setTimeout(() => {
         card.remove();
         loadAdminPayments();
-        // Also refresh orders pipeline — approved order should now appear there
-        if (approved) {
-          _ordersCache.clear();   // force orders to re-render the new confirmed order
-          loadAdminOrders();
-        }
+        if (approved) { _ordersCache.clear(); loadAdminOrders(); }
       }, 400);
     } else {
       loadAdminPayments();
@@ -1355,7 +1281,6 @@ async function loadAdminMenu() {
   } catch(err) { console.error("loadAdminMenu:", err); }
 }
 
-// ── Menu Item Modal ───────────────────────────────
 let editingItemId = null;
 
 async function openMenuModal(itemId = null) {
@@ -1364,12 +1289,16 @@ async function openMenuModal(itemId = null) {
   const title = document.getElementById("menuModalTitle");
   if (!modal) return;
 
-  // Reset form
   ["miName","miDesc","miPrice","miImage","miPrepTime"].forEach(id => {
     const el = document.getElementById(id); if (el) el.value = "";
   });
-  document.getElementById("miCategory").value  = "snacks";
+  document.getElementById("miCategory").value    = "snacks";
   document.getElementById("miAvailable").checked = true;
+
+  const uploadPrev = document.getElementById("miImagePreview");
+  if (uploadPrev) uploadPrev.style.display = "none";
+  const uploadFile = document.getElementById("miImageFile");
+  if (uploadFile) uploadFile.value = "";
 
   if (itemId) {
     title.textContent = "✏️ Edit Menu Item";
@@ -1378,13 +1307,17 @@ async function openMenuModal(itemId = null) {
       const data = await res.json();
       const item = data.item;
       if (item) {
-        document.getElementById("miName").value      = item.name || "";
-        document.getElementById("miDesc").value      = item.description || "";
-        document.getElementById("miPrice").value     = item.price || "";
-        document.getElementById("miCategory").value  = item.category || "snacks";
-        document.getElementById("miImage").value     = item.image || "";
-        document.getElementById("miPrepTime").value  = item.preparationTime || 10;
+        document.getElementById("miName").value     = item.name || "";
+        document.getElementById("miDesc").value     = item.description || "";
+        document.getElementById("miPrice").value    = item.price || "";
+        document.getElementById("miCategory").value = item.category || "snacks";
+        document.getElementById("miImage").value    = item.image || "";
+        document.getElementById("miPrepTime").value = item.preparationTime || 10;
         document.getElementById("miAvailable").checked = item.isAvailable !== false;
+        if (item.image && uploadPrev) {
+          uploadPrev.src = item.image;
+          uploadPrev.style.display = "block";
+        }
       }
     } catch {}
   } else {
@@ -1404,31 +1337,32 @@ async function saveMenuItem() {
   const category = document.getElementById("miCategory").value;
   if (!name || isNaN(price)) { showToast("Name and price are required", "error"); return; }
 
+  let imageUrl = document.getElementById("miImage").value.trim();
+  const fileInput = document.getElementById("miImageFile");
+  if (fileInput?.files?.[0]) {
+    const uploaded = await uploadMenuImage(fileInput.files[0]);
+    if (uploaded) imageUrl = uploaded;
+  }
+
   const payload = {
-    name,
+    name, price, category, image: imageUrl,
     description:     document.getElementById("miDesc").value.trim(),
-    price,
-    category,
-    image:           document.getElementById("miImage").value.trim(),
     preparationTime: parseInt(document.getElementById("miPrepTime").value) || 10,
     isAvailable:     document.getElementById("miAvailable").checked,
   };
 
-  const saveBtn = document.getElementById("saveMenuBtn");
-  if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = "Saving..."; }
-
+  const btn = document.getElementById("saveMenuBtn");
+  if (btn) { btn.disabled = true; btn.textContent = "Saving..."; }
   try {
     const url    = editingItemId ? `${API}/api/admin/menu/${editingItemId}` : `${API}/api/admin/menu`;
     const method = editingItemId ? "PUT" : "POST";
     const res    = await fetch(url, { method, headers: getAuthHeaders(), body: JSON.stringify(payload) });
     const data   = await res.json();
-    if (!res.ok) { showToast(data.error || "Failed to save", "error"); return; }
-    showToast(editingItemId ? "Item updated ✅" : "Item added ✅", "success");
-    closeMenuModal();
-    loadAdminMenu();
-    loadMenu();
+    if (!res.ok) { showToast(data.error || "Failed", "error"); return; }
+    showToast(editingItemId ? "Updated ✅" : "Added ✅", "success");
+    closeMenuModal(); loadAdminMenu(); loadMenu();
   } catch { showToast("Network error", "error"); }
-  finally { if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = "Save Item"; } }
+  finally { if (btn) { btn.disabled = false; btn.textContent = "Save Item"; } }
 }
 
 async function toggleMenuAvailability(id, isAvailable) {
@@ -1466,7 +1400,6 @@ async function loadAdminUsers() {
       return;
     }
 
-    // Use totalOrders + totalSpent already tracked on the User doc — no extra fetch needed
     content.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;flex-wrap:wrap;gap:8px;">
         <h3 style="margin:0;">
@@ -1481,15 +1414,8 @@ async function loadAdminUsers() {
         <table class="stats-table" id="studentsTable">
           <thead>
             <tr>
-              <th>Name</th>
-              <th>Roll No.</th>
-              <th>Branch</th>
-              <th>Phone</th>
-              <th>Orders</th>
-              <th>Spent</th>
-              <th>Joined</th>
-              <th>Status</th>
-              <th>Action</th>
+              <th>Name</th><th>Roll No.</th><th>Branch</th><th>Phone</th>
+              <th>Orders</th><th>Spent</th><th>Joined</th><th>Status</th><th>Action</th>
             </tr>
           </thead>
           <tbody>
@@ -1499,21 +1425,13 @@ async function loadAdminUsers() {
                   <div style="font-weight:700;font-size:0.95rem;">${u.name}</div>
                   <div style="font-size:0.73rem;opacity:0.45;margin-top:2px;">${u.email}</div>
                 </td>
-                <td>
-                  <span style="font-family:monospace;font-weight:700;font-size:0.88rem;color:#f97316;letter-spacing:0.5px;">
-                    ${u.rollNumber || '<span style="color:rgba(255,255,255,0.25);font-weight:400;">—</span>'}
-                  </span>
-                </td>
+                <td><span style="font-family:monospace;font-weight:700;font-size:0.88rem;color:#f97316;letter-spacing:0.5px;">${u.rollNumber || '<span style="color:rgba(255,255,255,0.25);font-weight:400;">—</span>'}</span></td>
                 <td style="font-size:0.88rem;">${u.branch || '<span style="opacity:0.3;">—</span>'}</td>
                 <td style="font-size:0.85rem;">${u.phone || '<span style="opacity:0.3;">—</span>'}</td>
                 <td style="text-align:center;font-weight:700;">${u.totalOrders || 0}</td>
                 <td style="font-weight:600;">₹${(u.totalSpent || 0).toLocaleString("en-IN")}</td>
                 <td style="font-size:0.8rem;opacity:0.55;">${new Date(u.createdAt).toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"})}</td>
-                <td>
-                  <span class="${u.isBanned ? "badge-banned" : "badge-active"}">
-                    ${u.isBanned ? "🚫 Banned" : "✅ Active"}
-                  </span>
-                </td>
+                <td><span class="${u.isBanned ? "badge-banned" : "badge-active"}">${u.isBanned ? "🚫 Banned" : "✅ Active"}</span></td>
                 <td>
                   ${u.isBanned
                     ? `<button class="btn-primary" style="padding:5px 12px;font-size:0.78rem;background:#2D6A4F;white-space:nowrap;" onclick="banUser('${u._id}',false,'')">Unban</button>`
@@ -1724,10 +1642,6 @@ async function submitAdminOrder() {
 // ══════════════════════════════════════════════════
 // AUTO-REFRESH
 // ══════════════════════════════════════════════════
-// ── Admin orders: refresh every 1 second when on orders tab ──
-// ── Payments/stats: refresh every 5 seconds ──
-// ── Lunch banner: every 60 seconds ──
-
 let _adminFastTick = 0;
 setInterval(async () => {
   if (document.hidden) return;
@@ -1735,13 +1649,9 @@ setInterval(async () => {
   _adminFastTick++;
 
   if (adminPage?.classList.contains("active")) {
-    // Orders: every tick (1s) — so admin sees new orders and phase changes instantly
     if (currentAdminTab === "orders")   loadAdminOrders();
-    // Payments: every 3 ticks (3s)
     if (currentAdminTab === "payments" && _adminFastTick % 3 === 0) loadAdminPayments();
-    // Stats + badge: every 5 ticks (5s)
     if (_adminFastTick % 5 === 0) { loadAdminStats(); refreshPaymentsBadge(); }
-    // Notifications check: every 5 ticks
     if (_adminFastTick % 5 === 0 && _notifEnabled) {
       try {
         const r = await fetch(`${API}/api/admin/orders?limit=100`, { headers: getAuthHeaders() });
@@ -1750,11 +1660,9 @@ setInterval(async () => {
       } catch {}
     }
   }
-  // Lunch banner: every 60 ticks (60s)
   if (_adminFastTick % 60 === 0) updateLunchBanner();
 }, 1000);
 
-// Silently refresh just the payments badge count
 async function refreshPaymentsBadge() {
   try {
     const res  = await fetch(`${API}/api/admin/pending-payments`, { headers: getAuthHeaders() });
@@ -1762,12 +1670,8 @@ async function refreshPaymentsBadge() {
     const badge = document.getElementById("pendingPaymentsBadge");
     if (!badge) return;
     const count = (data.orders || []).length;
-    if (count > 0) {
-      badge.textContent   = count;
-      badge.style.display = "inline";
-    } else {
-      badge.style.display = "none";
-    }
+    if (count > 0) { badge.textContent = count; badge.style.display = "inline"; }
+    else           { badge.style.display = "none"; }
   } catch {}
 }
 
@@ -1789,9 +1693,25 @@ document.addEventListener("DOMContentLoaded", () => {
   loadMenu();
   updateCartUI();
   updateLunchBanner();
-  // Check lunch break every minute
   setInterval(updateLunchBanner, 60000);
+
+  // Image file preview
+  document.getElementById("miImageFile")?.addEventListener("change", function() {
+    const file = this.files[0];
+    if (!file) return;
+    const preview = document.getElementById("miImagePreview");
+    if (preview) { preview.src = URL.createObjectURL(file); preview.style.display = "block"; }
+    document.getElementById("miImage").value = "";
+  });
 });
+
+// ══════════════════════════════════════════════════
+// FIX 2 & 3: Expose showPage and openCart globally
+// so inline onclick handlers in index.html can find them
+// ══════════════════════════════════════════════════
+window.showPage  = showPage;
+window.openCart  = openCart;
+window.closeCart = closeCart;
 
 // ══════════════════════════════════════════════════
 // ORDER TRACKING — Live status with progress steps
@@ -1803,7 +1723,6 @@ function trackOrder(orderId) {
   clearInterval(trackingInterval);
   renderTrackSkeleton(orderId);
   fetchAndRenderTrack(orderId);
-  // Poll every 8 seconds for live updates
   trackingInterval = setInterval(() => fetchAndRenderTrack(orderId), 8000);
 }
 
@@ -1813,10 +1732,7 @@ async function fetchAndRenderTrack(orderId) {
     const data = await res.json();
     if (!res.ok || !data.order) return;
     renderTrackUI(data.order);
-    // Stop polling once delivered or cancelled
-    if (["delivered","cancelled"].includes(data.order.status)) {
-      clearInterval(trackingInterval);
-    }
+    if (["delivered","cancelled"].includes(data.order.status)) clearInterval(trackingInterval);
   } catch {}
 }
 
@@ -1838,12 +1754,12 @@ function renderTrackUI(order) {
     { key: "delivered", label: "Picked Up",      icon: "🎉", desc: "Enjoy your meal!" },
   ];
 
-  const cancelled = order.status === "cancelled";
+  const cancelled  = order.status === "cancelled";
   const currentIdx = cancelled ? -1 : STEPS.findIndex(s => s.key === order.status);
 
   const stepHTML = STEPS.map((step, idx) => {
-    const done    = !cancelled && idx <= currentIdx;
-    const active  = !cancelled && idx === currentIdx;
+    const done   = !cancelled && idx <= currentIdx;
+    const active = !cancelled && idx === currentIdx;
     return `
       <div class="track-step ${done ? "done" : ""} ${active ? "active" : ""}">
         <div class="track-step-icon">${done ? step.icon : (active ? step.icon : "○")}</div>
@@ -1866,14 +1782,12 @@ function renderTrackUI(order) {
         </div>
         <span class="order-status ${order.status}">${order.status.toUpperCase()}</span>
       </div>
-
       ${cancelled ? `<div class="track-cancelled">❌ This order was cancelled</div>` : `
         <div class="track-progress-bar-wrap">
           <div class="track-progress-bar" style="width:${progressPct}%"></div>
         </div>
         <div class="track-steps">${stepHTML}</div>
       `}
-
       <div class="track-items">
         <h4 style="margin-bottom:10px;">🛒 Items</h4>
         ${order.items.map(i => `
@@ -1885,12 +1799,7 @@ function renderTrackUI(order) {
           <span>Total</span><span>₹${order.totalAmount}</span>
         </div>
       </div>
-
-      ${order.status === "ready" ? `
-        <div class="track-ready-banner">
-          🔔 Your order is ready! Head to the canteen counter now.
-        </div>` : ""}
-
+      ${order.status === "ready" ? `<div class="track-ready-banner">🔔 Your order is ready! Head to the canteen counter now.</div>` : ""}
       <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;">
         <button class="btn-secondary" onclick="showPage('ordersPage')">← Back to Orders</button>
         ${["pending","confirmed"].includes(order.status) ? `<button class="btn-primary" style="flex:1;" onclick="cancelOrder('${order._id}')">Cancel Order</button>` : ""}
@@ -1899,30 +1808,18 @@ function renderTrackUI(order) {
 }
 
 // ══════════════════════════════════════════════════
-// BROWSER NOTIFICATIONS (no VAPID / server push needed)
-// Uses the standard Notification API — works instantly,
-// no external service required.
+// BROWSER NOTIFICATIONS
 // ══════════════════════════════════════════════════
 let _notifEnabled = false;
 
 async function requestPushPermission() {
   const btn = document.getElementById("notifBtn");
-  if (!("Notification" in window)) {
-    showToast("Notifications not supported in this browser", "error");
-    return;
-  }
-
+  if (!("Notification" in window)) { showToast("Notifications not supported in this browser", "error"); return; }
   const permission = await Notification.requestPermission();
-  if (permission !== "granted") {
-    showToast("Notification permission denied", "error");
-    return;
-  }
-
+  if (permission !== "granted") { showToast("Notification permission denied", "error"); return; }
   _notifEnabled = true;
   if (btn) { btn.textContent = "🔔 Notifications ON"; btn.style.background = "#2D6A4F"; }
   showToast("Notifications enabled ✅ You'll be alerted on new orders.", "success");
-
-  // Test notification
   _sendNotification("🎉 CampusBites Notifications ON", "You'll get alerts when new orders arrive.");
 }
 
@@ -1930,15 +1827,11 @@ function _sendNotification(title, body, icon) {
   if (!_notifEnabled || Notification.permission !== "granted") return;
   try {
     new Notification(title, {
-      body,
-      icon: icon || "/images/upi-qr.png",
-      badge: "/images/upi-qr.png",
-      tag: "campusbites",
+      body, icon: icon || "/images/upi-qr.png", badge: "/images/upi-qr.png", tag: "campusbites",
     });
   } catch(e) {}
 }
 
-// ── Call this when a new order arrives (used in polling) ──
 let _lastOrderCount = null;
 function _checkAndNotifyNewOrders(orders) {
   const count = orders.filter(o => ["pending","confirmed"].includes(o.status)).length;
@@ -1953,10 +1846,9 @@ function _checkAndNotifyNewOrders(orders) {
 }
 
 // ══════════════════════════════════════════════════
-// EXPORT ORDERS — Excel & PDF (client-side)
+// EXPORT ORDERS — Excel & PDF
 // ══════════════════════════════════════════════════
 function openExportModal() {
-  // Pre-fill today's date
   const today = new Date().toISOString().split("T")[0];
   const el    = document.getElementById("exportTo");
   if (el && !el.value) el.value = today;
@@ -1977,114 +1869,76 @@ async function exportOrders(format) {
   if (status) params.set("status", status);
 
   showToast("Preparing export...", "info");
-
   try {
     const res  = await fetch(`${API}/api/admin/orders/export?${params}`, { headers: getAuthHeaders() });
     const data = await res.json();
     if (!res.ok || !data.rows) { showToast("Export failed", "error"); return; }
-
     if (format === "excel") exportToExcel(data.rows, from, to);
     else                    exportToPDF(data.rows, from, to);
-
     closeExportModal();
-  } catch (err) {
-    showToast("Export error: " + err.message, "error");
-  }
+  } catch (err) { showToast("Export error: " + err.message, "error"); }
 }
 
 function exportToExcel(rows, from, to) {
   const XLSX = window.XLSX;
   if (!XLSX) { showToast("Excel library not loaded", "error"); return; }
-
   const ws = XLSX.utils.json_to_sheet(rows);
-
-  // Column widths
-  ws["!cols"] = [
-    { wch: 10 }, { wch: 22 }, { wch: 28 }, { wch: 40 },
-    { wch: 12 }, { wch: 12 }, { wch: 16 }, { wch: 12 }, { wch: 22 }, { wch: 24 },
-  ];
-
-  const wb  = XLSX.utils.book_new();
+  ws["!cols"] = [{ wch: 10 }, { wch: 22 }, { wch: 28 }, { wch: 40 }, { wch: 12 }, { wch: 12 }, { wch: 16 }, { wch: 12 }, { wch: 22 }, { wch: 24 }];
+  const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Orders");
-
-  const filename = `CampusBites_Orders_${from || "all"}_to_${to || "now"}.xlsx`;
-  XLSX.writeFile(wb, filename);
+  XLSX.writeFile(wb, `CampusBites_Orders_${from || "all"}_to_${to || "now"}.xlsx`);
   showToast(`Excel downloaded (${rows.length} orders) ✅`, "success");
 }
 
 function exportToPDF(rows, from, to) {
   const { jsPDF } = window.jspdf;
   if (!jsPDF) { showToast("PDF library not loaded", "error"); return; }
-
   const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
-
-  // Header
   doc.setFillColor(249, 115, 22);
   doc.rect(0, 0, 297, 22, "F");
   doc.setTextColor(255, 255, 255);
   doc.setFontSize(16); doc.setFont("helvetica", "bold");
   doc.text("CampusBites — Orders Report", 14, 14);
   doc.setFontSize(10); doc.setFont("helvetica", "normal");
-  const dateRange = from && to ? `${from} → ${to}` : "All dates";
-  doc.text(`Period: ${dateRange}  |  Total: ${rows.length} orders`, 200, 14);
+  doc.text(`Period: ${from && to ? `${from} → ${to}` : "All dates"}  |  Total: ${rows.length} orders`, 200, 14);
   doc.setTextColor(0, 0, 0);
-
-  // Table
   doc.autoTable({
     startY: 26,
     head: [["Order ID", "Customer", "Items", "Total", "Payment", "Status", "Date"]],
-    body: rows.map(r => [
-      r["Order ID"], r["Customer"],
-      r["Items"].length > 50 ? r["Items"].slice(0, 50) + "..." : r["Items"],
-      "₹" + r["Total (₹)"], r["Payment"], r["Status"], r["Date"],
-    ]),
-    styles:       { fontSize: 8, cellPadding: 3 },
-    headStyles:   { fillColor: [249, 115, 22], textColor: 255, fontStyle: "bold" },
+    body: rows.map(r => [r["Order ID"], r["Customer"], r["Items"].length > 50 ? r["Items"].slice(0, 50) + "..." : r["Items"], "₹" + r["Total (₹)"], r["Payment"], r["Status"], r["Date"]]),
+    styles: { fontSize: 8, cellPadding: 3 },
+    headStyles: { fillColor: [249, 115, 22], textColor: 255, fontStyle: "bold" },
     alternateRowStyles: { fillColor: [248, 248, 252] },
     columnStyles: { 2: { cellWidth: 70 } },
   });
-
-  // Footer
   const pageCount = doc.internal.getNumberOfPages();
   for (let i = 1; i <= pageCount; i++) {
     doc.setPage(i);
     doc.setFontSize(8); doc.setTextColor(150);
     doc.text(`Page ${i} of ${pageCount} — Generated ${new Date().toLocaleString()}`, 14, doc.internal.pageSize.height - 6);
   }
-
-  const filename = `CampusBites_Orders_${from||"all"}_to_${to||"now"}.pdf`;
-  doc.save(filename);
+  doc.save(`CampusBites_Orders_${from||"all"}_to_${to||"now"}.pdf`);
   showToast(`PDF downloaded (${rows.length} orders) ✅`, "success");
 }
 
 // ══════════════════════════════════════════════════
-// MENU ITEM IMAGE UPLOAD — Cloudinary direct upload
+// MENU IMAGE UPLOAD — Cloudinary
 // ══════════════════════════════════════════════════
-// Uses Cloudinary's unsigned upload preset (free tier, no backend needed)
-// Setup: cloudinary.com → Settings → Upload → Add unsigned preset
-
-const CLOUDINARY_CLOUD = "your_cloud_name";      // ← replace with your Cloudinary cloud name
-const CLOUDINARY_PRESET = "campusbites_menu";    // ← replace with your unsigned upload preset
+const CLOUDINARY_CLOUD  = "your_cloud_name";       // ← replace with your Cloudinary cloud name
+const CLOUDINARY_PRESET = "campusbites_menu";      // ← replace with your unsigned upload preset
 
 async function uploadMenuImage(file) {
   if (!file) return null;
   if (file.size > 5 * 1024 * 1024) { showToast("Image must be under 5MB", "error"); return null; }
-
   const formData = new FormData();
   formData.append("file", file);
   formData.append("upload_preset", CLOUDINARY_PRESET);
   formData.append("folder", "campusbites-menu");
-
   showToast("Uploading image...", "info");
   try {
-    const res  = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/image/upload`, {
-      method: "POST", body: formData,
-    });
+    const res  = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/image/upload`, { method: "POST", body: formData });
     const data = await res.json();
-    if (data.secure_url) {
-      showToast("Image uploaded ✅", "success");
-      return data.secure_url;
-    }
+    if (data.secure_url) { showToast("Image uploaded ✅", "success"); return data.secure_url; }
     showToast("Cloudinary upload failed — using URL field instead", "error");
     return null;
   } catch {
@@ -2093,132 +1947,5 @@ async function uploadMenuImage(file) {
   }
 }
 
-// loadMyOrders is defined above — no duplicate needed
-
-// ══════════════════════════════════════════════════
-// PATCH openMenuModal — add image upload input
-// ══════════════════════════════════════════════════
-const _origOpenMenuModal = openMenuModal;
-async function openMenuModal(itemId = null) {
-  editingItemId = itemId;
-  const modal = document.getElementById("menuItemModal");
-  const title = document.getElementById("menuModalTitle");
-  if (!modal) return;
-
-  ["miName","miDesc","miPrice","miImage","miPrepTime"].forEach(id => {
-    const el = document.getElementById(id); if (el) el.value = "";
-  });
-  document.getElementById("miCategory").value    = "snacks";
-  document.getElementById("miAvailable").checked = true;
-
-  // Reset upload UI
-  const uploadPrev = document.getElementById("miImagePreview");
-  if (uploadPrev) uploadPrev.style.display = "none";
-  const uploadFile = document.getElementById("miImageFile");
-  if (uploadFile) uploadFile.value = "";
-
-  if (itemId) {
-    title.textContent = "✏️ Edit Menu Item";
-    try {
-      const res  = await fetch(`${API}/api/menu/${itemId}`);
-      const data = await res.json();
-      const item = data.item;
-      if (item) {
-        document.getElementById("miName").value     = item.name || "";
-        document.getElementById("miDesc").value     = item.description || "";
-        document.getElementById("miPrice").value    = item.price || "";
-        document.getElementById("miCategory").value = item.category || "snacks";
-        document.getElementById("miImage").value    = item.image || "";
-        document.getElementById("miPrepTime").value = item.preparationTime || 10;
-        document.getElementById("miAvailable").checked = item.isAvailable !== false;
-        if (item.image && uploadPrev) {
-          uploadPrev.src = item.image;
-          uploadPrev.style.display = "block";
-        }
-      }
-    } catch {}
-  } else {
-    title.textContent = "➕ Add Menu Item";
-  }
-  modal.classList.add("active");
-}
-
-// Patch saveMenuItem to handle image file upload
-const _origSaveMenuItem = saveMenuItem;
-async function saveMenuItem() {
-  const name     = document.getElementById("miName").value.trim();
-  const price    = parseFloat(document.getElementById("miPrice").value);
-  const category = document.getElementById("miCategory").value;
-  if (!name || isNaN(price)) { showToast("Name and price are required", "error"); return; }
-
-  // Try Cloudinary upload if file selected
-  let imageUrl = document.getElementById("miImage").value.trim();
-  const fileInput = document.getElementById("miImageFile");
-  if (fileInput?.files?.[0]) {
-    const uploaded = await uploadMenuImage(fileInput.files[0]);
-    if (uploaded) imageUrl = uploaded;
-  }
-
-  const payload = {
-    name, price, category, image: imageUrl,
-    description:     document.getElementById("miDesc").value.trim(),
-    preparationTime: parseInt(document.getElementById("miPrepTime").value) || 10,
-    isAvailable:     document.getElementById("miAvailable").checked,
-  };
-
-  const btn = document.getElementById("saveMenuBtn");
-  if (btn) { btn.disabled = true; btn.textContent = "Saving..."; }
-  try {
-    const url    = editingItemId ? `${API}/api/admin/menu/${editingItemId}` : `${API}/api/admin/menu`;
-    const method = editingItemId ? "PUT" : "POST";
-    const res    = await fetch(url, { method, headers: getAuthHeaders(), body: JSON.stringify(payload) });
-    const data   = await res.json();
-    if (!res.ok) { showToast(data.error || "Failed", "error"); return; }
-    showToast(editingItemId ? "Updated ✅" : "Added ✅", "success");
-    closeMenuModal(); loadAdminMenu(); loadMenu();
-  } catch { showToast("Network error", "error"); }
-  finally { if (btn) { btn.disabled = false; btn.textContent = "Save Item"; } }
-}
-
-// Image file preview handler — attach after DOM ready
-document.addEventListener("DOMContentLoaded", () => {
-  document.getElementById("miImageFile")?.addEventListener("change", function() {
-    const file = this.files[0];
-    if (!file) return;
-    const preview = document.getElementById("miImagePreview");
-    if (preview) {
-      preview.src = URL.createObjectURL(file);
-      preview.style.display = "block";
-    }
-    // Clear manual URL when file chosen
-    document.getElementById("miImage").value = "";
-  });
-});
-
-// ══════════════════════════════════════════════════
-// LUNCH BREAK — only blocks student online orders
-// Admin walk-in orders always go through (POST /api/admin/orders)
-// ══════════════════════════════════════════════════
-// Patch updateLunchBanner to show softer messaging
-const _origUpdateLunchBanner = updateLunchBanner;
-function updateLunchBanner() {
-  const banner   = document.getElementById("lunchBanner");
-  const placeBtn = document.getElementById("placeOrderBtn");
-  const msgEl    = document.getElementById("lunchBannerMsg");
-  if (!banner) return;
-
-  if (isLunchBreakNow()) {
-    banner.style.display = "flex";
-    if (msgEl) msgEl.textContent = "🍽️ Online ordering paused (1:10–2:00 PM) — Visit the canteen counter directly for lunch!";
-    if (placeBtn) {
-      placeBtn.disabled    = true;
-      placeBtn.textContent = "🚫 Visit Canteen (Lunch Break)";
-    }
-  } else {
-    banner.style.display = "none";
-    if (placeBtn) {
-      placeBtn.disabled    = false;
-      placeBtn.textContent = "🎉 Place Order";
-    }
-  }
-}
+// FIX 4: Suppress favicon 404 — add to your server.js instead if preferred:
+// app.get('/favicon.ico', (req, res) => res.status(204).end());
