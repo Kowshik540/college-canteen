@@ -1,5 +1,5 @@
 // ══════════════════════════════════════════════════
-// CAMPUSBITES  script.js  v4.0 — Full Featured
+// CAMPUSBITES  script.js  v5.0 — Notifications + No Flicker
 // ══════════════════════════════════════════════════
 
 // ── Global state ──────────────────────────────────
@@ -9,9 +9,8 @@ let selectedCategory = "all";
 let currentAdminTab  = "orders";
 let revenueChart     = null;
 let aoCart           = [];
-let lunchCheckInterval;
 
-const API = "https://college-canteen-qr2t.onrender.com";   // relative URLs — works locally + on Render
+const API = "https://college-canteen-qr2t.onrender.com";
 
 function getAuthHeaders() {
   return {
@@ -25,10 +24,8 @@ function getAuthHeaders() {
 // ══════════════════════════════════════════════════
 function isLunchBreakNow() {
   const now  = new Date();
-  const h    = now.getHours();
-  const m    = now.getMinutes();
-  const mins = h * 60 + m;
-  return mins >= 13 * 60 + 10 && mins < 14 * 60;   // 1:10 PM – 2:00 PM
+  const mins = now.getHours() * 60 + now.getMinutes();
+  return mins >= 13 * 60 + 10 && mins < 14 * 60;
 }
 
 function updateLunchBanner() {
@@ -36,20 +33,13 @@ function updateLunchBanner() {
   const placeBtn = document.getElementById("placeOrderBtn");
   const msgEl    = document.getElementById("lunchBannerMsg");
   if (!banner) return;
-
   if (isLunchBreakNow()) {
     banner.style.display = "flex";
-    if (msgEl) msgEl.textContent = "🍽️ Online ordering paused (1:10–2:00 PM) — Visit the canteen counter directly for lunch!";
-    if (placeBtn) {
-      placeBtn.disabled    = true;
-      placeBtn.textContent = "🚫 Visit Canteen (Lunch Break)";
-    }
+    if (msgEl) msgEl.textContent = "🍽️ Online ordering paused (1:10–2:00 PM) — Visit the canteen counter directly!";
+    if (placeBtn) { placeBtn.disabled = true; placeBtn.textContent = "🚫 Visit Canteen (Lunch Break)"; }
   } else {
     banner.style.display = "none";
-    if (placeBtn) {
-      placeBtn.disabled    = false;
-      placeBtn.textContent = "🎉 Place Order";
-    }
+    if (placeBtn) { placeBtn.disabled = false; placeBtn.textContent = "🎉 Place Order"; }
   }
 }
 
@@ -72,10 +62,98 @@ window.togglePassword = function(id, btn) {
 function showToast(msg, type = "info") {
   const t = document.getElementById("toast");
   if (!t) return;
-  t.textContent  = msg;
-  t.className    = `toast show toast-${type}`;
+  t.textContent = msg;
+  t.className   = `toast show toast-${type}`;
   clearTimeout(t._t);
   t._t = setTimeout(() => t.classList.remove("show"), 3500);
+}
+
+// ══════════════════════════════════════════════════
+// BROWSER NOTIFICATIONS — shared by admin + student
+// ══════════════════════════════════════════════════
+let _notifEnabled = false;
+
+// Auto-request on page load if already granted before
+if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+  _notifEnabled = true;
+}
+
+async function requestPushPermission() {
+  const btn = document.getElementById("notifBtn");
+  if (!("Notification" in window)) { showToast("Notifications not supported", "error"); return; }
+  const permission = await Notification.requestPermission();
+  if (permission !== "granted") { showToast("Notification permission denied", "error"); return; }
+  _notifEnabled = true;
+  if (btn) { btn.textContent = "🔔 Notifications ON"; btn.style.background = "#2D6A4F"; }
+  showToast("Notifications enabled ✅", "success");
+  _fireNotif("🎉 CampusBites", "Notifications are now ON!");
+}
+
+function _fireNotif(title, body, tag) {
+  if (Notification.permission !== "granted") return;
+  try {
+    new Notification(title, {
+      body,
+      icon:  "/images/upi-qr.PNG",
+      badge: "/images/upi-qr.PNG",
+      tag:   tag || "campusbites-" + Date.now(),
+    });
+  } catch(e) {}
+}
+
+// ── Student notifications — track order status changes ──
+// Stores last known status per order so we only fire on actual changes
+const _studentOrderStatusCache = new Map();
+
+function _checkStudentOrderNotifs(orders) {
+  if (Notification.permission !== "granted") return;
+  orders.forEach(o => {
+    const prev = _studentOrderStatusCache.get(o._id);
+    const cur  = o.status + "|" + (o.paymentStatus || "");
+    if (prev && prev !== cur) {
+      // Status or payment status changed — fire appropriate notification
+      if (o.status === "ready") {
+        _fireNotif("🔔 Order Ready!", `Your order #${o._id.slice(-6).toUpperCase()} is ready for pickup!`, "ready-" + o._id);
+      } else if (o.status === "confirmed") {
+        _fireNotif("✅ Order Confirmed", `Order #${o._id.slice(-6).toUpperCase()} has been confirmed.`, "confirmed-" + o._id);
+      } else if (o.status === "preparing") {
+        _fireNotif("🍳 Being Prepared", `Order #${o._id.slice(-6).toUpperCase()} is being prepared.`, "preparing-" + o._id);
+      } else if (o.status === "delivered") {
+        _fireNotif("🎉 Picked Up!", `Order #${o._id.slice(-6).toUpperCase()} marked as delivered.`, "delivered-" + o._id);
+      } else if (o.status === "cancelled") {
+        _fireNotif("❌ Order Cancelled", `Order #${o._id.slice(-6).toUpperCase()} was cancelled.`, "cancelled-" + o._id);
+      }
+      // Payment status notifications
+      if (o.paymentStatus === "rejected" && !prev.includes("rejected")) {
+        _fireNotif("❌ Payment Rejected", `Payment for order #${o._id.slice(-6).toUpperCase()} was rejected. Please re-order.`, "payrej-" + o._id);
+      } else if (o.paymentStatus === "paid" && prev.includes("awaiting")) {
+        _fireNotif("✅ Payment Approved!", `Your UPI payment for order #${o._id.slice(-6).toUpperCase()} was verified.`, "paypaid-" + o._id);
+      }
+    }
+    _studentOrderStatusCache.set(o._id, cur);
+  });
+}
+
+// ── Admin notifications — new orders ──
+let _adminLastOrderIds = null;
+
+function _checkAdminNewOrderNotifs(orders) {
+  if (Notification.permission !== "granted") return;
+  const currentIds = new Set(orders.map(o => o._id));
+  if (_adminLastOrderIds === null) {
+    // First load — just initialise, don't fire
+    _adminLastOrderIds = currentIds;
+    return;
+  }
+  const newOrders = orders.filter(o => !_adminLastOrderIds.has(o._id) && o.status === "confirmed");
+  if (newOrders.length > 0) {
+    _fireNotif(
+      `🛎️ ${newOrders.length} New Order${newOrders.length > 1 ? "s" : ""}!`,
+      newOrders.map(o => `#${o._id.slice(-6).toUpperCase()} — ₹${o.totalAmount}`).join("\n"),
+      "new-order-" + Date.now()
+    );
+  }
+  _adminLastOrderIds = currentIds;
 }
 
 // ══════════════════════════════════════════════════
@@ -91,21 +169,15 @@ function showPage(id) {
   document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
   document.getElementById(id)?.classList.add("active");
 
-  if (id === "adminPage") {
-    loadAdminStats();
-    setAdminTab("orders");
-  }
+  if (id === "adminPage") { loadAdminStats(); setAdminTab("orders"); }
   if (id === "ordersPage") {
     loadMyOrders();
-    _ordersPageInterval = setInterval(() => {
-      if (!document.hidden) loadMyOrders();
-    }, 1000);
+    // Poll every 3 seconds — fast enough for real-time status without hammering server
+    _ordersPageInterval = setInterval(() => { if (!document.hidden) loadMyOrders(); }, 3000);
   }
   if (id === "profilePage") {
     loadProfile();
-    _profilePageInterval = setInterval(() => {
-      if (!document.hidden) loadProfile();
-    }, 2000);
+    _profilePageInterval = setInterval(() => { if (!document.hidden) loadProfile(); }, 5000);
   }
   if (id === "mainPage") { renderMenu(); updateCartBadge(); }
 }
@@ -180,12 +252,14 @@ function updateNavbar() {
   const ordersBtn = document.getElementById("myOrdersBtn");
   const adminBtn  = document.getElementById("adminBtn");
   const nameEl    = document.getElementById("userNameDisplay");
+  const mobileNav = document.getElementById("mobileBottomNav");
 
   if (!user) {
     if (loginBtn)  loginBtn.style.display  = "inline-block";
     if (logoutBtn) logoutBtn.style.display = "none";
     if (ordersBtn) ordersBtn.style.display = "none";
     if (adminBtn)  adminBtn.style.display  = "none";
+    if (mobileNav) mobileNav.style.display = "none";
     return;
   }
   if (loginBtn)  loginBtn.style.display  = "none";
@@ -193,22 +267,18 @@ function updateNavbar() {
   if (ordersBtn) ordersBtn.style.display = "inline-block";
   if (nameEl)    nameEl.innerText        = user.name?.split(" ")[0] || "";
   if (adminBtn)  adminBtn.style.display  = user.role === "admin" ? "inline-block" : "none";
+
   const profileBtn = document.getElementById("profileBtn");
   if (profileBtn) profileBtn.style.display = user.role === "user" ? "inline-block" : "none";
-
-  // Mobile bottom nav — show for student users only
-  const mobileNav = document.getElementById("mobileBottomNav");
-  if (mobileNav) {
-    mobileNav.style.display = (user && user.role === "user") ? "flex" : "none";
-  }
+  if (mobileNav)  mobileNav.style.display  = user.role === "user" ? "flex" : "none";
 }
 
 function logout() {
-  // Clear all page intervals before logging out
   if (_ordersPageInterval)  { clearInterval(_ordersPageInterval);  _ordersPageInterval  = null; }
   if (_profilePageInterval) { clearInterval(_profilePageInterval); _profilePageInterval = null; }
-  localStorage.clear(); cart = [];
-  // Hide mobile bottom nav on logout
+  _studentOrderStatusCache.clear();
+  localStorage.clear();
+  cart = [];
   const mobileNav = document.getElementById("mobileBottomNav");
   if (mobileNav) mobileNav.style.display = "none";
   showPage("mainPage"); updateNavbar(); updateCartUI(); loadMenu();
@@ -217,12 +287,6 @@ function logout() {
 // ══════════════════════════════════════════════════
 // PROFILE PAGE
 // ══════════════════════════════════════════════════
-let _profileInterval = null;
-
-function _stopProfileRefresh() {
-  if (_profileInterval) { clearInterval(_profileInterval); _profileInterval = null; }
-}
-
 async function loadProfile() {
   const content = document.getElementById("profileContent");
   const user    = JSON.parse(localStorage.getItem("user") || "null");
@@ -249,26 +313,16 @@ async function loadProfile() {
       return;
     }
 
-    _patchText("prof-name",     u.name);
-    _patchText("prof-email",    u.email);
-    _patchText("prof-roll",     u.rollNumber ? `🎓 ${u.rollNumber}${u.branch ? " · " + u.branch : ""}` : "");
-    _patchText("prof-phone",    u.phone ? `📞 ${u.phone}` : "");
+    _patchText("prof-name",           u.name);
+    _patchText("prof-email",          u.email);
+    _patchText("prof-roll",           u.rollNumber ? `🎓 ${u.rollNumber}${u.branch ? " · " + u.branch : ""}` : "");
+    _patchText("prof-phone",          u.phone ? `📞 ${u.phone}` : "");
     _patchText("prof-stat-total",     String(orders.length));
     _patchText("prof-stat-spent",     `₹${spent.toLocaleString("en-IN")}`);
     _patchText("prof-stat-completed", String(delivered.length));
 
-    if (active.length > 0) {
-      const pill = document.getElementById("prof-active-pill");
-      if (pill) {
-        pill.textContent = `⏳ ${active.length} order${active.length > 1 ? "s" : ""} active`;
-      } else {
-        content.innerHTML = _buildProfileHTML(u, orders, delivered, spent, active);
-        return;
-      }
-    } else {
-      const pill = document.getElementById("prof-active-pill");
-      if (pill) pill.textContent = "";
-    }
+    const pill = document.getElementById("prof-active-pill");
+    if (pill) pill.textContent = active.length > 0 ? `⏳ ${active.length} order${active.length > 1 ? "s" : ""} active` : "";
 
     const recentList = document.getElementById("prof-recent-orders");
     if (recentList) recentList.innerHTML = _buildRecentOrders(orders);
@@ -276,7 +330,7 @@ async function loadProfile() {
   } catch (err) {
     console.error("loadProfile:", err);
     if (!content.querySelector(".profile-card"))
-      content.innerHTML = "<p style='padding:2rem;'>Failed to load profile. <button class='btn-secondary' onclick='loadProfile()'>Retry</button></p>";
+      content.innerHTML = "<p style='padding:2rem;'>Failed to load. <button class='btn-secondary' onclick='loadProfile()'>Retry</button></p>";
   }
 }
 
@@ -316,7 +370,9 @@ function _buildProfileHTML(u, orders, delivered, spent, active) {
       <p id="prof-phone" style="font-size:0.85rem;opacity:0.6;margin:2px 0;">
         ${u.phone ? `📞 ${u.phone}` : ""}
       </p>
-      ${active.length > 0 ? `<div id="prof-active-pill" style="display:inline-block;margin-top:8px;background:rgba(249,115,22,0.15);color:#f97316;border:1px solid rgba(249,115,22,0.3);border-radius:99px;padding:4px 14px;font-size:0.82rem;">⏳ ${active.length} order${active.length>1?"s":""} active</div>` : `<div id="prof-active-pill" style="display:inline-block;margin-top:8px;font-size:0.82rem;"></div>`}
+      <div id="prof-active-pill" style="display:inline-block;margin-top:8px;background:rgba(249,115,22,0.15);color:#f97316;border:1px solid rgba(249,115,22,0.3);border-radius:99px;padding:4px 14px;font-size:0.82rem;">
+        ${active.length > 0 ? `⏳ ${active.length} order${active.length>1?"s":""} active` : ""}
+      </div>
       <div class="profile-stats" style="margin-top:1.2rem;">
         <div class="pstat"><h3 id="prof-stat-total">${orders.length}</h3><p>Total Orders</p></div>
         <div class="pstat"><h3 id="prof-stat-spent">₹${spent.toLocaleString("en-IN")}</h3><p>Amount Spent</p></div>
@@ -325,9 +381,7 @@ function _buildProfileHTML(u, orders, delivered, spent, active) {
       <button class="btn-primary" style="margin-top:1.5rem;width:100%;" onclick="showPage('ordersPage')">📋 View All Orders</button>
     </div>
     <h3 style="margin:1.8rem 0 0.8rem;">🔁 Recent Orders</h3>
-    <div id="prof-recent-orders">
-      ${_buildRecentOrders(orders)}
-    </div>`;
+    <div id="prof-recent-orders">${_buildRecentOrders(orders)}</div>`;
 }
 
 async function reorder(orderId) {
@@ -343,8 +397,7 @@ async function reorder(orderId) {
     });
     saveCart(); updateCartUI();
     showToast("Items added to cart 🛒", "success");
-    showPage("mainPage");
-    openCart();
+    showPage("mainPage"); openCart();
   } catch { showToast("Failed to reorder", "error"); }
 }
 
@@ -373,9 +426,7 @@ function renderCategories() {
     </button>`).join("");
 }
 
-function selectCategory(cat) {
-  selectedCategory = cat; renderCategories(); renderMenu();
-}
+function selectCategory(cat) { selectedCategory = cat; renderCategories(); renderMenu(); }
 
 function renderMenu() {
   const grid = document.getElementById("menuGrid");
@@ -436,18 +487,16 @@ function decreaseItem(id, btn) {
   saveCart(); updateCartUI(); renderMenu();
 }
 
-function removeFromCart(id) {
-  cart = cart.filter(i => i._id !== id);
-  saveCart(); updateCartUI(); renderMenu();
-}
-
-function saveCart()     { localStorage.setItem("cart", JSON.stringify(cart)); }
-function getCartTotal() { return cart.reduce((s, i) => s + i.price * i.qty, 0); }
+function removeFromCart(id) { cart = cart.filter(i => i._id !== id); saveCart(); updateCartUI(); renderMenu(); }
+function saveCart()          { localStorage.setItem("cart", JSON.stringify(cart)); }
+function getCartTotal()      { return cart.reduce((s, i) => s + i.price * i.qty, 0); }
 
 function updateCartBadge() {
-  const cartBadge = document.getElementById("cartBadge");
-  if (!cartBadge) return;
-  cartBadge.textContent = cart.reduce((s, i) => s + i.qty, 0);
+  const n = cart.reduce((s, i) => s + i.qty, 0);
+  const b = document.getElementById("cartBadge");
+  const m = document.getElementById("mobCartBadge");
+  if (b) b.textContent = n;
+  if (m) m.textContent = n;
 }
 
 function updateCartUI() {
@@ -460,7 +509,6 @@ function updateCartUI() {
 
   const total = cart.reduce((s, i) => s + i.qty, 0);
   cartBadge.textContent = total;
-  // Sync mobile cart badge
   const mobBadge = document.getElementById("mobCartBadge");
   if (mobBadge) mobBadge.textContent = total;
 
@@ -484,38 +532,26 @@ function updateCartUI() {
   }).join("");
   if (subtotalEl) subtotalEl.textContent = "₹" + subtotal;
   if (totalEl)    totalEl.textContent    = "₹" + subtotal;
-
   updateLunchBanner();
 }
 
-function openCart() {
-  document.getElementById("cartModal")?.classList.add("active");
-  updateCartUI();
-  updateLunchBanner();
-}
+function openCart()  { document.getElementById("cartModal")?.classList.add("active"); updateCartUI(); updateLunchBanner(); }
 function closeCart() { document.getElementById("cartModal")?.classList.remove("active"); }
 
 // ══════════════════════════════════════════════════
-// PLACE ORDER — with payment routing
+// PLACE ORDER
 // ══════════════════════════════════════════════════
 async function placeOrder() {
-  if (isLunchBreakNow()) {
-    showToast("🚫 Ordering blocked during lunch break (1:10–2:00 PM). Visit canteen directly.", "error");
-    return;
-  }
+  if (isLunchBreakNow()) { showToast("🚫 Ordering blocked during lunch break.", "error"); return; }
   if (!cart.length) { showToast("Cart is empty", "error"); return; }
   if (!localStorage.getItem("token")) { showToast("Please login first", "error"); showPage("loginPage"); return; }
 
   const pickupTime    = document.getElementById("pickupTime")?.value;
-  const paymentMethod = document.querySelector('input[name="paymentMethod"]:checked')?.value || "cash";
-
+  const paymentMethod = document.querySelector('input[name="paymentMethod"]:checked')?.value || "online";
   if (!pickupTime) { showToast("Please select a pickup time", "error"); return; }
 
-  if (paymentMethod === "online") {
-    openUpiModal(pickupTime);
-  } else {
-    await placeOrderCash(pickupTime);
-  }
+  if (paymentMethod === "online") openUpiModal(pickupTime);
+  else                            await placeOrderCash(pickupTime);
 }
 
 async function placeOrderCash(pickupTime) {
@@ -538,49 +574,37 @@ async function placeOrderCash(pickupTime) {
 }
 
 // ══════════════════════════════════════════════════
-// UPI / PHONEPE QR PAYMENT FLOW
+// UPI PAYMENT FLOW
 // ══════════════════════════════════════════════════
-
-// ★ FIX 1: Corrected UPI_ID string (was broken with nested quotes)
 const UPI_ID = "9440487580@upi";
 
-let _upiPickupTime    = "";
-let _upiPendingOrder  = null;
+let _upiPickupTime     = "";
+let _upiPendingOrder   = null;
 let _upiScreenshotFile = null;
 
 function openUpiModal(pickupTime) {
-  _upiPickupTime    = pickupTime;
-  _upiPendingOrder  = null;
-  _upiScreenshotFile = null;
-
+  _upiPickupTime = pickupTime; _upiPendingOrder = null; _upiScreenshotFile = null;
   document.getElementById("upiStep1").style.display = "block";
   document.getElementById("upiStep2").style.display = "none";
   document.getElementById("upiAmountDisplay").textContent = "₹" + getCartTotal();
   document.getElementById("upiIdDisplay").textContent     = UPI_ID;
   document.getElementById("upiUtrInput").value            = "";
   document.getElementById("upiScreenshotPreview").style.display = "none";
-  document.getElementById("upiDropLabel").style.display  = "block";
-  document.getElementById("upiScreenshotInput").value    = "";
-
+  document.getElementById("upiDropLabel").style.display   = "block";
+  document.getElementById("upiScreenshotInput").value     = "";
   const btn = document.getElementById("upiConfirmBtn");
   if (btn) { btn.disabled = false; btn.textContent = "✅ I've Paid — Place Order"; }
-
   document.getElementById("upiModal").classList.add("active");
 }
 
-function closeUpiModal() {
-  document.getElementById("upiModal").classList.remove("active");
-}
+function closeUpiModal() { document.getElementById("upiModal").classList.remove("active"); }
 
 function previewUpiScreenshot(input) {
-  const file = input.files[0];
-  if (!file) return;
+  const file = input.files[0]; if (!file) return;
   _upiScreenshotFile = file;
   const prev = document.getElementById("upiScreenshotPreview");
   const lbl  = document.getElementById("upiDropLabel");
-  prev.src = URL.createObjectURL(file);
-  prev.style.display = "block";
-  lbl.style.display  = "none";
+  prev.src = URL.createObjectURL(file); prev.style.display = "block"; lbl.style.display = "none";
 }
 
 function handleUpiDrop(event) {
@@ -591,28 +615,20 @@ function handleUpiDrop(event) {
     _upiScreenshotFile = file;
     const prev = document.getElementById("upiScreenshotPreview");
     const lbl  = document.getElementById("upiDropLabel");
-    prev.src = URL.createObjectURL(file);
-    prev.style.display = "block";
-    lbl.style.display  = "none";
+    prev.src = URL.createObjectURL(file); prev.style.display = "block"; lbl.style.display = "none";
   }
 }
 
 async function submitUpiPayment() {
-  if (!_upiScreenshotFile) {
-    showToast("Please upload your payment screenshot 📷", "error");
-    return;
-  }
-
+  if (!_upiScreenshotFile) { showToast("Please upload your payment screenshot 📷", "error"); return; }
   const btn = document.getElementById("upiConfirmBtn");
   if (btn) { btn.disabled = true; btn.textContent = "Placing order..."; }
-
   try {
-    const orderRes  = await fetch(`${API}/api/orders`, {
+    const orderRes = await fetch(`${API}/api/orders`, {
       method: "POST", headers: getAuthHeaders(),
       body: JSON.stringify({
         items: cart.map(i => ({ menuItem: i._id, quantity: i.qty })),
-        pickupTime: _upiPickupTime,
-        paymentMethod: "online",
+        pickupTime: _upiPickupTime, paymentMethod: "online",
         notes: `UPI Payment${document.getElementById("upiUtrInput").value ? " · UTR: " + document.getElementById("upiUtrInput").value : ""} · Pickup: ${_upiPickupTime}`,
       }),
     });
@@ -623,28 +639,24 @@ async function submitUpiPayment() {
       return;
     }
     _upiPendingOrder = orderData.order;
-
     if (btn) btn.textContent = "Uploading screenshot...";
     const formData = new FormData();
     formData.append("screenshot", _upiScreenshotFile);
     formData.append("utrNumber",  document.getElementById("upiUtrInput").value || "");
-
-    const uploadRes = await fetch(`${API}/api/orders/${_upiPendingOrder._id}/upload-payment`, {
+    const uploadRes  = await fetch(`${API}/api/orders/${_upiPendingOrder._id}/upload-payment`, {
       method: "POST",
       headers: { "Authorization": "Bearer " + localStorage.getItem("token") },
       body: formData,
     });
     const uploadData = await uploadRes.json();
     if (!uploadRes.ok) {
-      showToast(uploadData.error || "Screenshot upload failed", "error");
+      showToast(uploadData.error || "Upload failed", "error");
       if (btn) { btn.disabled = false; btn.textContent = "✅ I've Paid — Place Order"; }
       return;
     }
-
     cart = []; saveCart(); updateCartUI(); closeCart();
     document.getElementById("upiStep1").style.display = "none";
     document.getElementById("upiStep2").style.display = "block";
-
   } catch (err) {
     showToast("Network error: " + err.message, "error");
     if (btn) { btn.disabled = false; btn.textContent = "✅ I've Paid — Place Order"; }
@@ -652,86 +664,23 @@ async function submitUpiPayment() {
 }
 
 // ══════════════════════════════════════════════════
-// LEGACY Razorpay (unused — kept for reference)
-// ══════════════════════════════════════════════════
-async function placeOrderWithRazorpay(pickupTime) {
-  const btn = document.getElementById("placeOrderBtn");
-  if (btn) { btn.disabled = true; btn.textContent = "Initialising payment..."; }
-
-  try {
-    const total = getCartTotal();
-
-    const rzpRes  = await fetch(`${API}/api/orders/create-razorpay`, {
-      method: "POST", headers: getAuthHeaders(),
-      body: JSON.stringify({ amount: total }),
-    });
-    const rzpData = await rzpRes.json();
-    if (!rzpRes.ok) { showToast(rzpData.error || "Payment init failed", "error"); return; }
-
-    const orderRes  = await fetch(`${API}/api/orders`, {
-      method: "POST", headers: getAuthHeaders(),
-      body: JSON.stringify({
-        items: cart.map(i => ({ menuItem: i._id, quantity: i.qty })),
-        pickupTime, paymentMethod: "online", notes: `Pickup: ${pickupTime}`,
-      }),
-    });
-    const orderData = await orderRes.json();
-    if (!orderRes.ok) { showToast(orderData.error || "Order failed", "error"); return; }
-
-    const canteenOrderId = orderData.order._id;
-    const user = JSON.parse(localStorage.getItem("user") || "{}");
-
-    const options = {
-      key:      rzpData.razorpayOrder.key_id || "",
-      amount:   rzpData.razorpayOrder.amount,
-      currency: "INR",
-      name:     "CampusBites",
-      description: "Canteen Order",
-      order_id: rzpData.razorpayOrder.id,
-      prefill:  { name: user.name, email: user.email },
-      theme:    { color: "#f97316" },
-      handler: async function(response) {
-        const verRes  = await fetch(`${API}/api/orders/${canteenOrderId}/verify-payment`, {
-          method: "POST", headers: getAuthHeaders(),
-          body: JSON.stringify({
-            razorpayPaymentId: response.razorpay_payment_id,
-            razorpayOrderId:   response.razorpay_order_id,
-            razorpaySignature: response.razorpay_signature,
-          }),
-        });
-        const verData = await verRes.json();
-        if (verData.success) {
-          showToast("Payment successful! Order confirmed 🎉", "success");
-          cart = []; saveCart(); updateCartUI(); closeCart();
-        } else {
-          showToast("Payment verification failed. Contact canteen.", "error");
-        }
-      },
-      modal: { ondismiss: () => { showToast("Payment cancelled", "info"); } },
-    };
-
-    const rzp = new window.Razorpay(options);
-    rzp.open();
-
-  } catch (err) {
-    showToast("Payment error: " + err.message, "error");
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = "🎉 Place Order"; }
-  }
-}
-
-// ══════════════════════════════════════════════════
-// MY ORDERS
+// MY ORDERS — diff-patch, no flicker, with notifications
 // ══════════════════════════════════════════════════
 const STATUS_EMOJI = { pending:"⏳", confirmed:"✅", preparing:"🍳", ready:"🔔", delivered:"🎉", cancelled:"❌" };
-
 const _myOrdersCache = new Map();
 
-async function loadMyOrders() {
-  const list = document.getElementById("ordersList");
-  if (!list) return;
+// Prevent concurrent fetches on the orders page
+let _myOrdersFetching = false;
 
-  if (!list.querySelector(".order-card")) {
+async function loadMyOrders() {
+  if (_myOrdersFetching) return;
+  _myOrdersFetching = true;
+
+  const list = document.getElementById("ordersList");
+  if (!list) { _myOrdersFetching = false; return; }
+
+  // Only show skeleton on very first load
+  if (!list.querySelector(".order-card") && !list.querySelector(".orders-empty")) {
     list.innerHTML = "<p id='orders-loading' style='text-align:center;opacity:0.5;'>Loading...</p>";
   }
 
@@ -740,9 +689,15 @@ async function loadMyOrders() {
     const data   = await res.json();
     const orders = data.orders || [];
 
+    // Fire student notifications for any status changes
+    _checkStudentOrderNotifs(orders);
+
     if (!orders.length) {
-      list.innerHTML = "<p style='text-align:center;padding:2rem;'>No orders yet 📋</p>";
-      _myOrdersCache.clear();
+      if (!list.querySelector(".orders-empty")) {
+        list.innerHTML = "<p class='orders-empty' style='text-align:center;padding:2rem;'>No orders yet 📋</p>";
+        _myOrdersCache.clear();
+      }
+      _myOrdersFetching = false;
       return;
     }
 
@@ -750,6 +705,7 @@ async function loadMyOrders() {
 
     const incomingIds = new Set(orders.map(o => o._id));
 
+    // Remove cards for cancelled/deleted orders
     list.querySelectorAll(".order-card[data-oid]").forEach(card => {
       if (!incomingIds.has(card.dataset.oid)) card.remove();
     });
@@ -761,35 +717,36 @@ async function loadMyOrders() {
       const isPending = o.paymentStatus === "awaiting_verification";
 
       let payLabel = isOnline ? "💳 UPI" : "💵 Cash";
-      if (isOnline && isPending)                         payLabel = "⏳ Payment verifying...";
-      else if (isOnline && o.paymentStatus === "paid")   payLabel = "✅ UPI Paid";
-      else if (o.paymentStatus === "rejected")           payLabel = "❌ Payment rejected";
+      if (isOnline && isPending)                       payLabel = "⏳ Payment verifying...";
+      else if (isOnline && o.paymentStatus === "paid") payLabel = "✅ UPI Paid";
+      else if (o.paymentStatus === "rejected")         payLabel = "❌ Payment rejected";
+
+      const cacheKey = o.status + "|" + (o.paymentStatus || "");
 
       if (!existing) {
-        const div   = document.createElement("div");
+        // New card — build and insert in correct position
+        const div  = document.createElement("div");
         div.innerHTML = _buildMyOrderCard(o, active, payLabel);
-        const card  = div.firstElementChild;
-        const refNode = list.children[idx] || null;
-        list.insertBefore(card, refNode);
-        _myOrdersCache.set(o._id, o.status + "|" + o.paymentStatus);
+        const card = div.firstElementChild;
+        list.insertBefore(card, list.children[idx] || null);
+        _myOrdersCache.set(o._id, cacheKey);
       } else {
-        const cacheKey = o.status + "|" + o.paymentStatus;
+        // Existing card — only patch what changed, never rebuild
         if (_myOrdersCache.get(o._id) !== cacheKey) {
           const badge = existing.querySelector(".order-status");
-          if (badge) {
-            badge.className   = `order-status ${o.status}`;
-            badge.textContent = `${STATUS_EMOJI[o.status]||""} ${o.status.toUpperCase()}`;
-          }
+          if (badge) { badge.className = `order-status ${o.status}`; badge.textContent = `${STATUS_EMOJI[o.status]||""} ${o.status.toUpperCase()}`; }
           const payEl = existing.querySelector(".pay-label-inline");
           if (payEl) payEl.textContent = payLabel;
           const btnRow = existing.querySelector(".order-btn-row");
           if (btnRow) btnRow.innerHTML = _buildMyOrderButtons(o, active);
           _myOrdersCache.set(o._id, cacheKey);
         }
+        // unchanged → zero DOM work — no flicker
       }
     });
 
-  } catch { list.innerHTML = "<p>Failed to load orders</p>"; }
+  } catch { /* silent — don't wipe UI on network blip */ }
+  finally { _myOrdersFetching = false; }
 }
 
 function _buildMyOrderCard(o, active, payLabel) {
@@ -843,24 +800,24 @@ function _setText(id, val) {
 
 function _buildStatsSkeleton() {
   const defs = [
-    { container: "adminStats", cards: [
+    { container: "adminStats",   cards: [
       { id: "stat-pending",   icon: "⏳", label: "Pending" },
       { id: "stat-preparing", icon: "🍳", label: "Preparing" },
       { id: "stat-ready",     icon: "🔔", label: "Ready" },
       { id: "stat-users",     icon: "👥", label: "Students" },
     ]},
-    { container: "dailyStats", cards: [
-      { id: "stat-todayOrders",  icon: "📋", label: "Today Orders",  cls: "stat-today" },
-      { id: "stat-todayRev",     icon: "💰", label: "Today Revenue", cls: "stat-today" },
+    { container: "dailyStats",   cards: [
+      { id: "stat-todayOrders", icon: "📋", label: "Today Orders",  cls: "stat-today" },
+      { id: "stat-todayRev",    icon: "💰", label: "Today Revenue", cls: "stat-today" },
     ]},
     { container: "monthlyStats", cards: [
-      { id: "stat-monthOrders",  icon: "📅", label: "This Month Orders",  cls: "stat-month" },
-      { id: "stat-monthRev",     icon: "💵", label: "This Month Revenue", cls: "stat-month" },
+      { id: "stat-monthOrders", icon: "📅", label: "This Month Orders",  cls: "stat-month" },
+      { id: "stat-monthRev",    icon: "💵", label: "This Month Revenue", cls: "stat-month" },
     ]},
     { container: "allTimeStats", cards: [
-      { id: "stat-totalOrders",  icon: "📦", label: "All Orders",     cls: "stat-total" },
-      { id: "stat-totalRev",     icon: "🏆", label: "Total Revenue",  cls: "stat-total" },
-      { id: "stat-menuItems",    icon: "🍽️", label: "Menu Items",    cls: "stat-total" },
+      { id: "stat-totalOrders", icon: "📦", label: "All Orders",    cls: "stat-total" },
+      { id: "stat-totalRev",    icon: "🏆", label: "Total Revenue", cls: "stat-total" },
+      { id: "stat-menuItems",   icon: "🍽️", label: "Menu Items",   cls: "stat-total" },
     ]},
   ];
   defs.forEach(({ container, cards }) => {
@@ -882,19 +839,17 @@ async function loadAdminStats() {
     const res  = await fetch(`${API}/api/admin/dashboard`, { headers: getAuthHeaders() });
     const data = await res.json();
     const s    = data.stats || {};
-
-    _setText("stat-pending",      s.pendingOrders  || 0);
-    _setText("stat-preparing",    s.preparingOrders|| 0);
-    _setText("stat-ready",        s.readyOrders    || 0);
-    _setText("stat-users",        s.totalUsers     || 0);
-    _setText("stat-todayOrders",  s.todayOrders    || 0);
-    _setText("stat-todayRev",    "₹" + (s.todayRevenue  || 0));
-    _setText("stat-monthOrders",  s.monthOrders    || 0);
-    _setText("stat-monthRev",    "₹" + (s.monthRevenue  || 0));
-    _setText("stat-totalOrders",  s.totalOrders    || 0);
-    _setText("stat-totalRev",    "₹" + (s.totalRevenue  || 0));
-    _setText("stat-menuItems",    s.totalMenuItems || 0);
-
+    _setText("stat-pending",     s.pendingOrders   || 0);
+    _setText("stat-preparing",   s.preparingOrders || 0);
+    _setText("stat-ready",       s.readyOrders     || 0);
+    _setText("stat-users",       s.totalUsers      || 0);
+    _setText("stat-todayOrders", s.todayOrders     || 0);
+    _setText("stat-todayRev",   "₹" + (s.todayRevenue  || 0));
+    _setText("stat-monthOrders", s.monthOrders     || 0);
+    _setText("stat-monthRev",   "₹" + (s.monthRevenue  || 0));
+    _setText("stat-totalOrders", s.totalOrders     || 0);
+    _setText("stat-totalRev",   "₹" + (s.totalRevenue  || 0));
+    _setText("stat-menuItems",   s.totalMenuItems  || 0);
     renderRevenueChart(s.monthlyBreakdown || []);
     renderMonthlyTable(s.monthlyBreakdown || []);
   } catch(err) { console.error("Stats error", err); }
@@ -936,17 +891,22 @@ function renderMonthlyTable(breakdown) {
 }
 
 // ══════════════════════════════════════════════════
-// ADMIN — ORDERS (3-phase pipeline)
+// ADMIN — ORDERS PIPELINE
+// Only shows orders with paymentStatus = "paid" OR paymentMethod = "cash"
+// Fully flicker-free: diffs by ID, never wipes the container
 // ══════════════════════════════════════════════════
-const _ordersCache = new Map();
+const _ordersCache           = new Map();
+let   _adminOrdersRendering  = false;
 
 function _buildOrderCard(o, next, btnLabel, color) {
-  const displayName = o.customerName
-    || (o.user && typeof o.user === "object" && o.user.name)
-    || "Student";
-  const email = o.user && typeof o.user === "object" ? o.user.email : "";
+  const displayName = o.customerName || (o.user?.name) || "Student";
+  const email       = o.user?.email || "";
   const walkinBadge = o.createdByAdmin ? '<span class="badge-walkin">Walk-in</span>' : "";
-  const payLabel    = o.paymentMethod === "online" ? "💳 UPI" : "💵 Cash";
+  const payLabel    = o.paymentMethod === "online" ? "💳 UPI (Paid)" : "💵 Cash";
+  // UTR number if available
+  const utrLine = o.paymentUtrNote
+    ? `<p style="font-size:0.75rem;color:#f97316;margin:2px 0;">🔖 UTR: ${o.paymentUtrNote}</p>`
+    : "";
 
   return `
     <div class="order-card" id="order-${o._id}" data-status="${o.status}">
@@ -959,11 +919,12 @@ function _buildOrderCard(o, next, btnLabel, color) {
       </div>
       <div style="background:rgba(255,255,255,0.06);border-radius:8px;padding:8px 10px;margin-bottom:8px;">
         <p style="font-size:0.95rem;font-weight:700;margin:0;color:#fff;">👤 ${displayName} ${walkinBadge}</p>
-        ${o.user && o.user.rollNumber ? `<p style="font-size:0.78rem;font-family:monospace;color:#f97316;margin:3px 0 0;letter-spacing:0.5px;">🎓 ${o.user.rollNumber}${o.user.branch ? " · " + o.user.branch : ""}</p>` : ""}
+        ${o.user?.rollNumber ? `<p style="font-size:0.78rem;font-family:monospace;color:#f97316;margin:3px 0 0;">🎓 ${o.user.rollNumber}${o.user.branch ? " · " + o.user.branch : ""}</p>` : ""}
         ${email ? `<p style="font-size:0.72rem;opacity:0.45;margin:2px 0 0;">${email}</p>` : ""}
       </div>
-      <p style="font-size:0.72rem;opacity:0.45;margin:0 0 8px;">${new Date(o.createdAt).toLocaleTimeString()} · ${payLabel}</p>
-      <hr style="opacity:0.12;margin:0 0 8px;"/>
+      <p style="font-size:0.72rem;opacity:0.45;margin:0 0 4px;">${new Date(o.createdAt).toLocaleTimeString()} · ${payLabel}</p>
+      ${utrLine}
+      <hr style="opacity:0.12;margin:4px 0 8px;"/>
       ${o.items.map(i => `
         <div style="display:flex;justify-content:space-between;font-size:0.88rem;padding:3px 0;">
           <span>• ${i.name} × ${i.quantity}</span>
@@ -987,9 +948,7 @@ function _ensureSection(container, id, title, icon, color) {
     section.className = "order-section";
     section.id        = `section-${id}`;
     section.innerHTML = `
-      <h3 class="order-section-title" style="color:${color};">
-        ${icon} ${title} <span class="section-count" id="count-${id}">0</span>
-      </h3>
+      <h3 class="order-section-title" style="color:${color};">${icon} ${title} <span class="section-count" id="count-${id}">0</span></h3>
       <div class="orders-grid" id="grid-${id}"></div>`;
     container.appendChild(section);
   }
@@ -997,8 +956,7 @@ function _ensureSection(container, id, title, icon, color) {
 }
 
 function _animateCardIn(card, grid) {
-  card.style.opacity   = "0";
-  card.style.transform = "scale(0.95)";
+  card.style.opacity = "0"; card.style.transform = "scale(0.95)";
   grid.appendChild(card);
   requestAnimationFrame(() => {
     card.style.transition = "opacity 0.25s, transform 0.25s";
@@ -1021,27 +979,28 @@ const _laneOf = status => {
   return null;
 };
 
-// ── Admin orders: duplicate-free, diff-patch, 1-second real-time ──
-let _adminOrdersRendering = false;  // prevent overlapping renders
-
 async function loadAdminOrders() {
-  // Skip if a render is already in-flight (prevents race-condition duplicates)
   if (_adminOrdersRendering) return;
   _adminOrdersRendering = true;
 
   const container = document.getElementById("adminContent");
   if (!container) { _adminOrdersRendering = false; return; }
-
-  // Guard: if the container has been taken over by another tab, bail out
-  if (container.dataset.tab && container.dataset.tab !== "orders") {
-    _adminOrdersRendering = false; return;
-  }
+  if (container.dataset.tab && container.dataset.tab !== "orders") { _adminOrdersRendering = false; return; }
   container.dataset.tab = "orders";
 
   try {
-    const res    = await fetch(`${API}/api/admin/orders?limit=100`, { headers: getAuthHeaders() });
-    const data   = await res.json();
-    const active = (data.orders || []).filter(o => _laneOf(o.status));
+    const res  = await fetch(`${API}/api/admin/orders?limit=100`, { headers: getAuthHeaders() });
+    const data = await res.json();
+
+    // ── KEY FILTER: only show orders where payment is confirmed ──
+    // Cash orders are always shown. Online orders only shown after payment verified (paid).
+    const allOrders = (data.orders || []).filter(o => _laneOf(o.status));
+    const active    = allOrders.filter(o =>
+      o.paymentMethod === "cash" || o.paymentStatus === "paid"
+    );
+
+    // Fire admin new-order notifications
+    _checkAdminNewOrderNotifs(active);
 
     const laneConfig = {
       new:       { title: "New Orders",   icon: "⏳", color: "#f97316", next: "preparing", label: "🍳 Start Preparing" },
@@ -1049,9 +1008,7 @@ async function loadAdminOrders() {
       ready:     { title: "Ready Pickup", icon: "🔔", color: "#048A81", next: "delivered", label: "🎉 Delivered"        },
     };
 
-    // ── EMPTY STATE ──
     if (!active.length) {
-      // Only wipe if not already showing empty state (prevents flicker)
       if (!container.querySelector(".orders-empty")) {
         container.innerHTML = '<div class="orders-empty" style="text-align:center;padding:3rem;opacity:0.4;font-size:1.3rem;">🎉 No active orders right now</div>';
         _ordersCache.clear();
@@ -1060,7 +1017,7 @@ async function loadAdminOrders() {
       return;
     }
 
-    // If switching from empty state or another tab, reset cleanly
+    // If switching from empty state, reset
     if (container.querySelector(".orders-empty") || !container.querySelector(".order-section")) {
       container.innerHTML = "";
       _ordersCache.clear();
@@ -1068,7 +1025,7 @@ async function loadAdminOrders() {
 
     const activeIds = new Set(active.map(o => o._id));
 
-    // ── REMOVE orders no longer active ──
+    // Remove gone orders
     _ordersCache.forEach((cached, oid) => {
       if (!activeIds.has(oid)) {
         const card = document.getElementById(`order-${oid}`);
@@ -1077,23 +1034,20 @@ async function loadAdminOrders() {
       }
     });
 
-    // ── ENSURE sections exist (idempotent) ──
-    Object.entries(laneConfig).forEach(([id, cfg]) => {
-      _ensureSection(container, id, cfg.title, cfg.icon, cfg.color);
-    });
+    // Ensure all lane sections exist (idempotent)
+    Object.entries(laneConfig).forEach(([id, cfg]) => _ensureSection(container, id, cfg.title, cfg.icon, cfg.color));
 
-    // ── PROCESS each active order ──
+    // Process each order
     active.forEach(o => {
-      const newLane  = _laneOf(o.status);
-      const cfg      = laneConfig[newLane];
-      const grid     = document.getElementById(`grid-${newLane}`);
+      const newLane      = _laneOf(o.status);
+      const cfg          = laneConfig[newLane];
+      const grid         = document.getElementById(`grid-${newLane}`);
       if (!grid) return;
-
       const cached       = _ordersCache.get(o._id);
       const existingCard = document.getElementById(`order-${o._id}`);
 
       if (!existingCard && !cached) {
-        // Brand new — insert once
+        // Brand new
         const div = document.createElement("div");
         div.innerHTML = _buildOrderCard(o, cfg.next, cfg.label, cfg.color);
         _animateCardIn(div.firstElementChild, grid);
@@ -1102,26 +1056,23 @@ async function loadAdminOrders() {
       } else if (existingCard && cached) {
         if (cached.status !== o.status || cached.lane !== newLane) {
           if (cached.lane !== newLane) {
-            // Lane changed — move card: remove from old, add to new
+            // Move to new lane
             _animateCardOut(existingCard, () => {
               const div = document.createElement("div");
               div.innerHTML = _buildOrderCard(o, cfg.next, cfg.label, cfg.color);
               _animateCardIn(div.firstElementChild, grid);
             });
           } else {
-            // Same lane — patch status badge only (no rebuild, no flicker)
+            // Same lane — patch badge only, no rebuild
             const badge = existingCard.querySelector(".order-status");
-            if (badge) {
-              badge.className   = `order-status ${o.status}`;
-              badge.textContent = o.status.toUpperCase();
-            }
+            if (badge) { badge.className = `order-status ${o.status}`; badge.textContent = o.status.toUpperCase(); }
             existingCard.dataset.status = o.status;
           }
           _ordersCache.set(o._id, { status: o.status, lane: newLane });
         }
-        // status unchanged → zero DOM work
+        // unchanged → zero DOM work
       } else if (!existingCard && cached) {
-        // Cache says it exists but DOM doesn't — rebuild (tab was cleared)
+        // Cache stale, DOM gone — rebuild
         const div = document.createElement("div");
         div.innerHTML = _buildOrderCard(o, cfg.next, cfg.label, cfg.color);
         _animateCardIn(div.firstElementChild, grid);
@@ -1129,8 +1080,8 @@ async function loadAdminOrders() {
       }
     });
 
-    // ── UPDATE section counts + visibility ──
-    Object.entries(laneConfig).forEach(([id]) => {
+    // Update section counts & visibility
+    Object.keys(laneConfig).forEach(id => {
       const section = document.getElementById(`section-${id}`);
       const grid    = document.getElementById(`grid-${id}`);
       const countEl = document.getElementById(`count-${id}`);
@@ -1178,7 +1129,7 @@ function setAdminTab(tab) {
   const content = document.getElementById("adminContent");
   if (content) { content.innerHTML = ""; content.dataset.tab = tab; }
   _ordersCache.clear();
-  _adminOrdersRendering = false;  // reset render lock when switching tabs
+  _adminOrdersRendering = false;
 
   if (tab === "orders")   loadAdminOrders();
   if (tab === "payments") loadAdminPayments();
@@ -1187,26 +1138,33 @@ function setAdminTab(tab) {
 }
 
 // ══════════════════════════════════════════════════
-// ADMIN — UPI PAYMENT VERIFICATION
+// ADMIN — PAYMENTS
+// Shows UTR + screenshot prominently. No flickering (only rebuilt on data change).
 // ══════════════════════════════════════════════════
+let _paymentsRenderKey = "";  // prevents unnecessary re-renders
+
 async function loadAdminPayments() {
   const content = document.getElementById("adminContent");
   if (!content) return;
-  // Guard: only render if this tab is still active
   if (content.dataset.tab && content.dataset.tab !== "payments") return;
   content.dataset.tab = "payments";
-  content.innerHTML = "<p style='text-align:center;padding:2rem;opacity:0.5;'>Loading...</p>";
 
   try {
-    const res  = await fetch(`${API}/api/admin/pending-payments`, { headers: getAuthHeaders() });
-    const data = await res.json();
+    const res    = await fetch(`${API}/api/admin/pending-payments`, { headers: getAuthHeaders() });
+    const data   = await res.json();
     const orders = data.orders || [];
 
+    // Update badge
     const badge = document.getElementById("pendingPaymentsBadge");
     if (badge) {
-      if (orders.length) { badge.textContent = orders.length; badge.style.display = "inline"; }
-      else               { badge.style.display = "none"; }
+      badge.textContent   = orders.length;
+      badge.style.display = orders.length ? "inline" : "none";
     }
+
+    // Only rebuild HTML if the data actually changed (prevents flicker on poll)
+    const newKey = orders.map(o => o._id + o.paymentStatus).join(",");
+    if (newKey === _paymentsRenderKey) return;
+    _paymentsRenderKey = newKey;
 
     if (!orders.length) {
       content.innerHTML = `<div style="text-align:center;padding:3rem;opacity:0.4;font-size:1.1rem;">✅ No pending payment verifications</div>`;
@@ -1220,35 +1178,72 @@ async function loadAdminPayments() {
       <div class="orders-grid">
         ${orders.map(o => `
           <div class="order-card" id="pmt-${o._id}">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-              <b>#${o._id.slice(-6).toUpperCase()}</b>
-              <span class="order-status pending">⏳ AWAITING VERIFICATION</span>
+            <!-- Header -->
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+              <b style="font-size:1.05rem;letter-spacing:0.5px;">#${o._id.slice(-6).toUpperCase()}</b>
+              <span class="order-status pending">⏳ AWAITING</span>
             </div>
-            <p><b>👤</b> ${o.user?.name || "N/A"}</p>
-            <p style="font-size:0.78rem;opacity:0.55;">${o.user?.email || ""} · ${new Date(o.createdAt).toLocaleString()}</p>
-            <hr style="opacity:0.15;margin:8px 0;"/>
-            ${o.items.map(i => `<div style="display:flex;justify-content:space-between;font-size:0.9rem;padding:2px 0;"><span>• ${i.name} × ${i.quantity}</span><span>₹${i.price * i.quantity}</span></div>`).join("")}
-            <p style="font-weight:700;margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.1);">Total: ₹${o.totalAmount}</p>
-            ${o.paymentUtrNote ? `<p style="font-size:0.8rem;opacity:0.6;margin-top:4px;">🔖 UTR: ${o.paymentUtrNote}</p>` : ""}
-            ${o.notes ? `<p style="font-size:0.8rem;opacity:0.55;">📝 ${o.notes}</p>` : ""}
+
+            <!-- Customer -->
+            <div style="background:rgba(255,255,255,0.06);border-radius:8px;padding:8px 10px;margin-bottom:10px;">
+              <p style="font-weight:700;margin:0;">👤 ${o.user?.name || "N/A"}</p>
+              <p style="font-size:0.75rem;opacity:0.5;margin:3px 0 0;">${o.user?.email || ""}</p>
+              <p style="font-size:0.72rem;opacity:0.45;margin:2px 0 0;">🕐 ${new Date(o.createdAt).toLocaleString()}</p>
+            </div>
+
+            <!-- Items -->
+            <hr style="opacity:0.12;margin:0 0 8px;"/>
+            ${o.items.map(i => `
+              <div style="display:flex;justify-content:space-between;font-size:0.88rem;padding:2px 0;">
+                <span>• ${i.name} × ${i.quantity}</span>
+                <span style="opacity:0.75;">₹${i.price * i.quantity}</span>
+              </div>`).join("")}
+            <p style="font-weight:700;font-size:1rem;margin:8px 0;padding-top:8px;border-top:1px solid rgba(255,255,255,0.1);">
+              Total: ₹${o.totalAmount}
+            </p>
+
+            <!-- UTR Number — prominently displayed -->
+            ${o.paymentUtrNote ? `
+              <div style="background:rgba(249,115,22,0.12);border:1px solid rgba(249,115,22,0.35);border-radius:8px;padding:8px 12px;margin-bottom:10px;">
+                <p style="font-size:0.72rem;opacity:0.6;margin:0 0 2px;">UTR / Transaction ID</p>
+                <p style="font-size:1rem;font-weight:700;color:#f97316;font-family:monospace;margin:0;letter-spacing:0.5px;">
+                  ${o.paymentUtrNote}
+                </p>
+              </div>` : `
+              <p style="opacity:0.4;font-size:0.82rem;margin-bottom:8px;">🔖 No UTR provided</p>`}
+
+            ${o.notes ? `<p style="font-size:0.8rem;opacity:0.55;margin-bottom:10px;">📝 ${o.notes}</p>` : ""}
+
+            <!-- Screenshot — large and clickable -->
             ${o.paymentScreenshot ? `
-              <a href="${o.paymentScreenshot}" target="_blank" rel="noopener">
+              <a href="${o.paymentScreenshot}" target="_blank" rel="noopener"
+                 style="display:block;margin-bottom:6px;">
                 <img src="${o.paymentScreenshot}" alt="Payment screenshot"
-                     style="width:100%;max-height:200px;object-fit:contain;border-radius:10px;
-                            margin:10px 0;cursor:pointer;border:1px solid rgba(249,115,22,0.4);"
-                     onerror="this.style.display='none'"/>
+                     style="width:100%;max-height:260px;object-fit:contain;border-radius:12px;
+                            border:2px solid rgba(249,115,22,0.5);cursor:pointer;
+                            background:rgba(255,255,255,0.04);"
+                     onerror="this.parentElement.innerHTML='<p style=\'opacity:0.4;font-size:0.82rem;\'>⚠️ Screenshot failed to load</p>'"/>
               </a>
-              <p style="font-size:0.75rem;opacity:0.4;margin-bottom:10px;">Tap image to open full size</p>
-            ` : `<p style="opacity:0.4;font-size:0.85rem;margin:10px 0;">⚠️ No screenshot uploaded</p>`}
-            <div style="display:flex;gap:8px;margin-top:4px;">
-              <button class="btn-primary" style="flex:1;background:#2D6A4F;" onclick="verifyUpiPayment('${o._id}', true)">✅ Approve & Confirm</button>
-              <button class="btn-primary" style="flex:1;background:#e63946;" onclick="verifyUpiPayment('${o._id}', false)">❌ Reject</button>
+              <p style="font-size:0.72rem;opacity:0.4;margin-bottom:12px;text-align:center;">
+                📷 Tap screenshot to open full size
+              </p>` : `
+              <div style="border:2px dashed rgba(249,115,22,0.25);border-radius:10px;padding:16px;text-align:center;margin-bottom:12px;opacity:0.5;">
+                ⚠️ No screenshot uploaded
+              </div>`}
+
+            <!-- Approve / Reject -->
+            <div style="display:flex;gap:8px;">
+              <button class="btn-primary" style="flex:1;background:#2D6A4F;padding:10px;"
+                onclick="verifyUpiPayment('${o._id}', true)">✅ Approve</button>
+              <button class="btn-primary" style="flex:1;background:#e63946;padding:10px;"
+                onclick="verifyUpiPayment('${o._id}', false)">❌ Reject</button>
             </div>
           </div>`).join("")}
       </div>`;
   } catch (err) {
     console.error("loadAdminPayments:", err);
-    content.innerHTML = "<p style='padding:2rem;'>Failed to load</p>";
+    if (!content.innerHTML.includes("orders-grid"))
+      content.innerHTML = "<p style='padding:2rem;'>Failed to load. Retrying...</p>";
   }
 }
 
@@ -1266,12 +1261,8 @@ async function verifyUpiPayment(orderId, approved) {
       if (card) { card.style.opacity = "1"; card.style.pointerEvents = "auto"; }
       return;
     }
-
-    showToast(
-      approved ? "✅ Payment approved — order confirmed!" : "❌ Payment rejected — order cancelled",
-      approved ? "success" : "info"
-    );
-
+    showToast(approved ? "✅ Payment approved!" : "❌ Payment rejected", approved ? "success" : "info");
+    _paymentsRenderKey = "";   // force re-render on next poll
     if (card) {
       card.style.transition = "opacity 0.4s, transform 0.4s";
       card.style.transform  = "scale(0.9)";
@@ -1302,7 +1293,6 @@ async function loadAdminMenu() {
     const res   = await fetch(`${API}/api/menu`, { headers: getAuthHeaders() });
     const data  = await res.json();
     const items = data.items || [];
-
     content.innerHTML = `
       <div style="display:flex;justify-content:flex-end;margin-bottom:1rem;">
         <button class="btn-primary" onclick="openMenuModal()">➕ Add New Item</button>
@@ -1347,18 +1337,13 @@ async function openMenuModal(itemId = null) {
   const modal = document.getElementById("menuItemModal");
   const title = document.getElementById("menuModalTitle");
   if (!modal) return;
-
-  ["miName","miDesc","miPrice","miImage","miPrepTime"].forEach(id => {
-    const el = document.getElementById(id); if (el) el.value = "";
-  });
+  ["miName","miDesc","miPrice","miImage","miPrepTime"].forEach(id => { const el = document.getElementById(id); if (el) el.value = ""; });
   document.getElementById("miCategory").value    = "snacks";
   document.getElementById("miAvailable").checked = true;
-
   const uploadPrev = document.getElementById("miImagePreview");
   if (uploadPrev) uploadPrev.style.display = "none";
   const uploadFile = document.getElementById("miImageFile");
   if (uploadFile) uploadFile.value = "";
-
   if (itemId) {
     title.textContent = "✏️ Edit Menu Item";
     try {
@@ -1373,43 +1358,32 @@ async function openMenuModal(itemId = null) {
         document.getElementById("miImage").value    = item.image || "";
         document.getElementById("miPrepTime").value = item.preparationTime || 10;
         document.getElementById("miAvailable").checked = item.isAvailable !== false;
-        if (item.image && uploadPrev) {
-          uploadPrev.src = item.image;
-          uploadPrev.style.display = "block";
-        }
+        if (item.image && uploadPrev) { uploadPrev.src = item.image; uploadPrev.style.display = "block"; }
       }
     } catch {}
-  } else {
-    title.textContent = "➕ Add Menu Item";
-  }
+  } else { title.textContent = "➕ Add Menu Item"; }
   modal.classList.add("active");
 }
 
-function closeMenuModal() {
-  document.getElementById("menuItemModal")?.classList.remove("active");
-  editingItemId = null;
-}
+function closeMenuModal() { document.getElementById("menuItemModal")?.classList.remove("active"); editingItemId = null; }
 
 async function saveMenuItem() {
   const name     = document.getElementById("miName").value.trim();
   const price    = parseFloat(document.getElementById("miPrice").value);
   const category = document.getElementById("miCategory").value;
   if (!name || isNaN(price)) { showToast("Name and price are required", "error"); return; }
-
   let imageUrl = document.getElementById("miImage").value.trim();
   const fileInput = document.getElementById("miImageFile");
   if (fileInput?.files?.[0]) {
     const uploaded = await uploadMenuImage(fileInput.files[0]);
     if (uploaded) imageUrl = uploaded;
   }
-
   const payload = {
     name, price, category, image: imageUrl,
-    description:     document.getElementById("miDesc").value.trim(),
+    description: document.getElementById("miDesc").value.trim(),
     preparationTime: parseInt(document.getElementById("miPrepTime").value) || 10,
-    isAvailable:     document.getElementById("miAvailable").checked,
+    isAvailable: document.getElementById("miAvailable").checked,
   };
-
   const btn = document.getElementById("saveMenuBtn");
   if (btn) { btn.disabled = true; btn.textContent = "Saving..."; }
   try {
@@ -1435,8 +1409,7 @@ async function deleteMenuItem(id) {
   if (!confirm("Delete this item? This cannot be undone.")) return;
   try {
     await fetch(`${API}/api/admin/menu/${id}`, { method: "DELETE", headers: getAuthHeaders() });
-    showToast("Deleted", "info");
-    loadAdminMenu(); loadMenu();
+    showToast("Deleted", "info"); loadAdminMenu(); loadMenu();
   } catch { showToast("Failed", "error"); }
 }
 
@@ -1447,63 +1420,43 @@ async function loadAdminUsers() {
   const content = document.getElementById("adminContent");
   if (!content) return;
   content.innerHTML = "<p style='text-align:center;padding:2rem;opacity:0.5;'>Loading students...</p>";
-
   try {
-    const res  = await fetch(`${API}/api/admin/users`, { headers: getAuthHeaders() });
+    const res   = await fetch(`${API}/api/admin/users`, { headers: getAuthHeaders() });
     if (!res.ok) throw new Error("HTTP " + res.status);
     const data  = await res.json();
     const users = data.users || [];
-
-    if (!users.length) {
-      content.innerHTML = "<p style='text-align:center;padding:3rem;opacity:0.4;'>No students registered yet</p>";
-      return;
-    }
-
+    if (!users.length) { content.innerHTML = "<p style='text-align:center;padding:3rem;opacity:0.4;'>No students registered yet</p>"; return; }
     content.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;flex-wrap:wrap;gap:8px;">
-        <h3 style="margin:0;">
-          👥 Registered Students
-          <span style="font-size:0.85rem;font-weight:400;opacity:0.5;margin-left:8px;">${users.length} total</span>
-        </h3>
-        <input type="text" class="form-input" placeholder="🔍 Name / roll number / email..."
+        <h3 style="margin:0;">👥 Registered Students <span style="font-size:0.85rem;font-weight:400;opacity:0.5;margin-left:8px;">${users.length} total</span></h3>
+        <input type="text" class="form-input" placeholder="🔍 Name / roll / email..."
                style="max-width:260px;padding:8px 12px;font-size:0.88rem;"
                oninput="filterStudentsTable(this.value)"/>
       </div>
       <div class="users-table-wrap">
         <table class="stats-table" id="studentsTable">
-          <thead>
-            <tr>
-              <th>Name</th><th>Roll No.</th><th>Branch</th><th>Phone</th>
-              <th>Orders</th><th>Spent</th><th>Joined</th><th>Status</th><th>Action</th>
-            </tr>
-          </thead>
+          <thead><tr><th>Name</th><th>Roll No.</th><th>Branch</th><th>Phone</th><th>Orders</th><th>Spent</th><th>Joined</th><th>Status</th><th>Action</th></tr></thead>
           <tbody>
             ${users.map(u => `
-              <tr data-search="${[u.name, u.email, u.rollNumber||"", u.branch||"", u.phone||""].join(" ").toLowerCase()}">
-                <td>
-                  <div style="font-weight:700;font-size:0.95rem;">${u.name}</div>
-                  <div style="font-size:0.73rem;opacity:0.45;margin-top:2px;">${u.email}</div>
-                </td>
-                <td><span style="font-family:monospace;font-weight:700;font-size:0.88rem;color:#f97316;letter-spacing:0.5px;">${u.rollNumber || '<span style="color:rgba(255,255,255,0.25);font-weight:400;">—</span>'}</span></td>
-                <td style="font-size:0.88rem;">${u.branch || '<span style="opacity:0.3;">—</span>'}</td>
-                <td style="font-size:0.85rem;">${u.phone || '<span style="opacity:0.3;">—</span>'}</td>
+              <tr data-search="${[u.name,u.email,u.rollNumber||"",u.branch||"",u.phone||""].join(" ").toLowerCase()}">
+                <td><div style="font-weight:700;">${u.name}</div><div style="font-size:0.73rem;opacity:0.45;">${u.email}</div></td>
+                <td><span style="font-family:monospace;font-weight:700;font-size:0.88rem;color:#f97316;">${u.rollNumber || "—"}</span></td>
+                <td>${u.branch || "—"}</td>
+                <td>${u.phone || "—"}</td>
                 <td style="text-align:center;font-weight:700;">${u.totalOrders || 0}</td>
                 <td style="font-weight:600;">₹${(u.totalSpent || 0).toLocaleString("en-IN")}</td>
                 <td style="font-size:0.8rem;opacity:0.55;">${new Date(u.createdAt).toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"})}</td>
                 <td><span class="${u.isBanned ? "badge-banned" : "badge-active"}">${u.isBanned ? "🚫 Banned" : "✅ Active"}</span></td>
-                <td>
-                  ${u.isBanned
-                    ? `<button class="btn-primary" style="padding:5px 12px;font-size:0.78rem;background:#2D6A4F;white-space:nowrap;" onclick="banUser('${u._id}',false,'')">Unban</button>`
-                    : `<button class="btn-primary" style="padding:5px 12px;font-size:0.78rem;background:#e63946;white-space:nowrap;" onclick="promptBan('${u._id}')">Ban</button>`}
-                </td>
+                <td>${u.isBanned
+                  ? `<button class="btn-primary" style="padding:5px 12px;font-size:0.78rem;background:#2D6A4F;" onclick="banUser('${u._id}',false,'')">Unban</button>`
+                  : `<button class="btn-primary" style="padding:5px 12px;font-size:0.78rem;background:#e63946;" onclick="promptBan('${u._id}')">Ban</button>`}</td>
               </tr>`).join("")}
           </tbody>
         </table>
       </div>`;
-
   } catch(err) {
     console.error("loadAdminUsers:", err);
-    content.innerHTML = `<p style='padding:2rem;color:#e63946;'>❌ Failed to load students. <button class="btn-secondary" onclick="loadAdminUsers()">Retry</button></p>`;
+    content.innerHTML = `<p style='padding:2rem;color:#e63946;'>❌ Failed. <button class="btn-secondary" onclick="loadAdminUsers()">Retry</button></p>`;
   }
 }
 
@@ -1533,22 +1486,18 @@ async function banUser(userId, isBanned, banReason) {
 }
 
 // ══════════════════════════════════════════════════
-// ADMIN — ADD ORDER MODAL
+// ADMIN — ADD WALK-IN ORDER MODAL
 // ══════════════════════════════════════════════════
 function openAddOrderModal() {
   aoCart = [];
-  ["aoCustomerName","aoNotes","aoItemSearch"].forEach(id => {
-    const el = document.getElementById(id); if (el) el.value = "";
-  });
+  ["aoCustomerName","aoNotes","aoItemSearch"].forEach(id => { const el = document.getElementById(id); if (el) el.value = ""; });
   document.querySelector('input[name="aoPayment"][value="paid"]').checked = true;
   renderAoMenu(menuItems.filter(i => i.isAvailable !== false));
   renderAoSummary(); renderAoSuggestions();
   document.getElementById("addOrderModal")?.classList.add("active");
 }
 
-function closeAddOrderModal() {
-  document.getElementById("addOrderModal")?.classList.remove("active");
-}
+function closeAddOrderModal() { document.getElementById("addOrderModal")?.classList.remove("active"); }
 
 function filterAoItems(query) {
   const q = query.toLowerCase().trim();
@@ -1577,7 +1526,7 @@ function renderAoMenu(items) {
             <div class="ao-qty-controls">
               <button class="qty-btn minus" onclick="aoDecrease('${item._id}')" ${qty===0?"disabled":""}>−</button>
               <span class="qty ao-qty-display">${qty}</span>
-              <button class="qty-btn plus"  onclick="aoIncrease('${item._id}')">+</button>
+              <button class="qty-btn plus" onclick="aoIncrease('${item._id}')">+</button>
             </div>
           </div>`;
       }).join("")}
@@ -1595,19 +1544,15 @@ function aoDecrease(id) {
   ex.qty--; if (ex.qty <= 0) aoCart = aoCart.filter(c => c._id !== id);
   refreshAoRow(id); renderAoSummary(); renderAoSuggestions();
 }
-function aoRemoveItem(id) {
-  aoCart = aoCart.filter(c => c._id !== id);
-  refreshAoRow(id); renderAoSummary(); renderAoSuggestions();
-}
+function aoRemoveItem(id) { aoCart = aoCart.filter(c => c._id !== id); refreshAoRow(id); renderAoSummary(); renderAoSuggestions(); }
 
 function refreshAoRow(id) {
   const row = document.getElementById(`ao-item-${id}`); if (!row) return;
-  const qty  = aoCart.find(c => c._id === id)?.qty || 0;
+  const qty = aoCart.find(c => c._id === id)?.qty || 0;
   row.classList.toggle("ao-item-selected", qty > 0);
-  const qEl  = row.querySelector(".ao-qty-display");
-  const mBtn = row.querySelector(".qty-btn.minus");
-  if (qEl)  qEl.textContent = qty;
-  if (mBtn) mBtn.disabled   = qty === 0;
+  const qEl = row.querySelector(".ao-qty-display"); const mBtn = row.querySelector(".qty-btn.minus");
+  if (qEl) qEl.textContent = qty;
+  if (mBtn) mBtn.disabled  = qty === 0;
 }
 
 function renderAoSummary() {
@@ -1639,28 +1584,12 @@ function renderAoSuggestions() {
   const cartCats = [...new Set(aoCart.map(c => (c.category||"").toLowerCase()))];
   const avail    = menuItems.filter(i => i.isAvailable !== false && !cartIds.includes(i._id));
   const sugs     = [];
-
-  const has = cats => cartCats.some(c => cats.includes(c));
+  const has  = cats => cartCats.some(c => cats.includes(c));
   const find = cats => avail.find(i => cats.includes((i.category||"").toLowerCase()));
-
-  if (!has(["beverages","drinks","juice","tea","coffee"])) {
-    const d = find(["beverages","drinks","juice","tea","coffee"]);
-    if (d) sugs.push({ item: d, reason: "🥤 Add a drink?" });
-  }
-  if (!has(["lunch","dinner","breakfast","meals"]) && has(["snacks"])) {
-    const m = find(["lunch","dinner","breakfast","meals"]);
-    if (m) sugs.push({ item: m, reason: "🍱 Add a main meal?" });
-  }
-  if (!has(["dessert","desserts","sweets"]) && has(["lunch","dinner"])) {
-    const des = find(["dessert","desserts","sweets"]);
-    if (des) sugs.push({ item: des, reason: "🍮 Add a dessert?" });
-  }
-  cartCats.forEach(cat => {
-    if (sugs.length >= 4) return;
-    const extra = avail.find(i => (i.category||"").toLowerCase() === cat && !sugs.find(s => s.item._id === i._id));
-    if (extra) sugs.push({ item: extra, reason: `✨ Also from ${cat}` });
-  });
-
+  if (!has(["beverages","drinks","juice","tea","coffee"])) { const d = find(["beverages","drinks","juice","tea","coffee"]); if (d) sugs.push({ item: d, reason: "🥤 Add a drink?" }); }
+  if (!has(["lunch","dinner","breakfast","meals"]) && has(["snacks"])) { const m = find(["lunch","dinner","breakfast","meals"]); if (m) sugs.push({ item: m, reason: "🍱 Add a main meal?" }); }
+  if (!has(["dessert","desserts","sweets"]) && has(["lunch","dinner"])) { const des = find(["dessert","desserts","sweets"]); if (des) sugs.push({ item: des, reason: "🍮 Add a dessert?" }); }
+  cartCats.forEach(cat => { if (sugs.length >= 4) return; const extra = avail.find(i => (i.category||"").toLowerCase() === cat && !sugs.find(s => s.item._id === i._id)); if (extra) sugs.push({ item: extra, reason: `✨ Also from ${cat}` }); });
   if (!sugs.length) { box.innerHTML = ""; return; }
   box.innerHTML = `
     <div class="ao-suggestions-title">💡 Suggested Add-ons</div>
@@ -1680,10 +1609,8 @@ async function submitAdminOrder() {
   const notes        = document.getElementById("aoNotes").value.trim();
   const payStatus    = document.querySelector('input[name="aoPayment"]:checked')?.value || "paid";
   const btn          = document.getElementById("aoSubmitBtn");
-
   if (!customerName) { showToast("Customer name required", "error"); return; }
   if (!aoCart.length) { showToast("Add at least one item", "error"); return; }
-
   if (btn) { btn.disabled = true; btn.textContent = "Placing..."; }
   try {
     const res  = await fetch(`${API}/api/admin/orders`, {
@@ -1699,38 +1626,38 @@ async function submitAdminOrder() {
 }
 
 // ══════════════════════════════════════════════════
-// AUTO-REFRESH
+// AUTO-REFRESH — background polling, no flicker
+// All functions guard against concurrent calls internally.
+// Intervals are staggered so they don't all fire at once.
 // ══════════════════════════════════════════════════
-let _adminFastTick = 0;
+let _adminTick = 0;
+
 setInterval(async () => {
   if (document.hidden) return;
+  _adminTick++;
   const adminPage = document.getElementById("adminPage");
-  _adminFastTick++;
 
   if (adminPage?.classList.contains("active")) {
-    if (currentAdminTab === "orders")   loadAdminOrders();
-    if (currentAdminTab === "payments" && _adminFastTick % 3 === 0) loadAdminPayments();
-    if (_adminFastTick % 5 === 0) { loadAdminStats(); refreshPaymentsBadge(); }
-    if (_adminFastTick % 5 === 0 && _notifEnabled) {
-      try {
-        const r = await fetch(`${API}/api/admin/orders?limit=100`, { headers: getAuthHeaders() });
-        const d = await r.json();
-        _checkAndNotifyNewOrders(d.orders || []);
-      } catch {}
-    }
+    // Orders tab: refresh every 2 seconds (guarded by _adminOrdersRendering)
+    if (currentAdminTab === "orders" && _adminTick % 2 === 0) loadAdminOrders();
+    // Payments tab: refresh every 4 seconds (guarded by key diff)
+    if (currentAdminTab === "payments" && _adminTick % 4 === 0) loadAdminPayments();
+    // Stats: every 10 seconds
+    if (_adminTick % 10 === 0) { loadAdminStats(); refreshPaymentsBadge(); }
   }
-  if (_adminFastTick % 60 === 0) updateLunchBanner();
+  // Lunch banner: every 60 seconds
+  if (_adminTick % 60 === 0) updateLunchBanner();
 }, 1000);
 
 async function refreshPaymentsBadge() {
   try {
-    const res  = await fetch(`${API}/api/admin/pending-payments`, { headers: getAuthHeaders() });
-    const data = await res.json();
+    const res   = await fetch(`${API}/api/admin/pending-payments`, { headers: getAuthHeaders() });
+    const data  = await res.json();
     const badge = document.getElementById("pendingPaymentsBadge");
     if (!badge) return;
     const count = (data.orders || []).length;
-    if (count > 0) { badge.textContent = count; badge.style.display = "inline"; }
-    else           { badge.style.display = "none"; }
+    badge.textContent   = count;
+    badge.style.display = count > 0 ? "inline" : "none";
   } catch {}
 }
 
@@ -1740,7 +1667,7 @@ async function refreshPaymentsBadge() {
 document.addEventListener("keydown", e => {
   if ((e.ctrlKey||e.metaKey) && e.key === "k") { e.preventDefault(); document.getElementById("searchInput")?.focus(); }
   if ((e.ctrlKey||e.metaKey) && e.key === "b") { e.preventDefault(); openCart(); }
-  if (e.key === "Escape") { closeCart(); closeMenuModal(); closeAddOrderModal(); }
+  if (e.key === "Escape") { closeCart(); closeMenuModal(); closeAddOrderModal(); closeUpiModal(); }
 });
 
 // ══════════════════════════════════════════════════
@@ -1754,26 +1681,21 @@ document.addEventListener("DOMContentLoaded", () => {
   updateLunchBanner();
   setInterval(updateLunchBanner, 60000);
 
-  // Image file preview
   document.getElementById("miImageFile")?.addEventListener("change", function() {
-    const file = this.files[0];
-    if (!file) return;
+    const file = this.files[0]; if (!file) return;
     const preview = document.getElementById("miImagePreview");
     if (preview) { preview.src = URL.createObjectURL(file); preview.style.display = "block"; }
     document.getElementById("miImage").value = "";
   });
 });
 
-// ══════════════════════════════════════════════════
-// FIX 2 & 3: Expose showPage and openCart globally
-// so inline onclick handlers in index.html can find them
-// ══════════════════════════════════════════════════
+// Expose to inline onclick handlers
 window.showPage  = showPage;
 window.openCart  = openCart;
 window.closeCart = closeCart;
 
 // ══════════════════════════════════════════════════
-// ORDER TRACKING — Live status with progress steps
+// ORDER TRACKING
 // ══════════════════════════════════════════════════
 let trackingInterval = null;
 
@@ -1806,11 +1728,11 @@ function renderTrackUI(order) {
   if (!el) return;
 
   const STEPS = [
-    { key: "pending",   label: "Order Placed",  icon: "🛒", desc: "Your order has been received" },
-    { key: "confirmed", label: "Confirmed",      icon: "✅", desc: "Canteen confirmed your order" },
-    { key: "preparing", label: "Preparing",      icon: "🍳", desc: "Your food is being prepared" },
-    { key: "ready",     label: "Ready!",         icon: "🔔", desc: "Come pick up your order!" },
-    { key: "delivered", label: "Picked Up",      icon: "🎉", desc: "Enjoy your meal!" },
+    { key: "pending",   label: "Order Placed", icon: "🛒", desc: "Your order has been received" },
+    { key: "confirmed", label: "Confirmed",     icon: "✅", desc: "Canteen confirmed your order" },
+    { key: "preparing", label: "Preparing",     icon: "🍳", desc: "Your food is being prepared" },
+    { key: "ready",     label: "Ready!",        icon: "🔔", desc: "Come pick up your order!" },
+    { key: "delivered", label: "Picked Up",     icon: "🎉", desc: "Enjoy your meal!" },
   ];
 
   const cancelled  = order.status === "cancelled";
@@ -1845,8 +1767,7 @@ function renderTrackUI(order) {
         <div class="track-progress-bar-wrap">
           <div class="track-progress-bar" style="width:${progressPct}%"></div>
         </div>
-        <div class="track-steps">${stepHTML}</div>
-      `}
+        <div class="track-steps">${stepHTML}</div>`}
       <div class="track-items">
         <h4 style="margin-bottom:10px;">🛒 Items</h4>
         ${order.items.map(i => `
@@ -1867,66 +1788,24 @@ function renderTrackUI(order) {
 }
 
 // ══════════════════════════════════════════════════
-// BROWSER NOTIFICATIONS
-// ══════════════════════════════════════════════════
-let _notifEnabled = false;
-
-async function requestPushPermission() {
-  const btn = document.getElementById("notifBtn");
-  if (!("Notification" in window)) { showToast("Notifications not supported in this browser", "error"); return; }
-  const permission = await Notification.requestPermission();
-  if (permission !== "granted") { showToast("Notification permission denied", "error"); return; }
-  _notifEnabled = true;
-  if (btn) { btn.textContent = "🔔 Notifications ON"; btn.style.background = "#2D6A4F"; }
-  showToast("Notifications enabled ✅ You'll be alerted on new orders.", "success");
-  _sendNotification("🎉 CampusBites Notifications ON", "You'll get alerts when new orders arrive.");
-}
-
-function _sendNotification(title, body, icon) {
-  if (!_notifEnabled || Notification.permission !== "granted") return;
-  try {
-    new Notification(title, {
-      body, icon: icon || "/images/upi-qr.png", badge: "/images/upi-qr.png", tag: "campusbites",
-    });
-  } catch(e) {}
-}
-
-let _lastOrderCount = null;
-function _checkAndNotifyNewOrders(orders) {
-  const count = orders.filter(o => ["pending","confirmed"].includes(o.status)).length;
-  if (_lastOrderCount !== null && count > _lastOrderCount) {
-    const diff = count - _lastOrderCount;
-    _sendNotification(
-      `🛎️ ${diff} New Order${diff > 1 ? "s" : ""}!`,
-      `You have ${count} order${count > 1 ? "s" : ""} waiting to be prepared.`
-    );
-  }
-  _lastOrderCount = count;
-}
-
-// ══════════════════════════════════════════════════
-// EXPORT ORDERS — Excel & PDF
+// EXPORT ORDERS
 // ══════════════════════════════════════════════════
 function openExportModal() {
   const today = new Date().toISOString().split("T")[0];
-  const el    = document.getElementById("exportTo");
+  const el = document.getElementById("exportTo");
   if (el && !el.value) el.value = today;
   document.getElementById("exportModal")?.classList.add("active");
 }
-function closeExportModal() {
-  document.getElementById("exportModal")?.classList.remove("active");
-}
+function closeExportModal() { document.getElementById("exportModal")?.classList.remove("active"); }
 
 async function exportOrders(format) {
   const from   = document.getElementById("exportFrom")?.value;
   const to     = document.getElementById("exportTo")?.value;
   const status = document.getElementById("exportStatus")?.value;
-
   const params = new URLSearchParams();
   if (from)   params.set("from", from);
   if (to)     params.set("to", to);
   if (status) params.set("status", status);
-
   showToast("Preparing export...", "info");
   try {
     const res  = await fetch(`${API}/api/admin/orders/export?${params}`, { headers: getAuthHeaders() });
@@ -1945,7 +1824,7 @@ function exportToExcel(rows, from, to) {
   ws["!cols"] = [{ wch: 10 }, { wch: 22 }, { wch: 28 }, { wch: 40 }, { wch: 12 }, { wch: 12 }, { wch: 16 }, { wch: 12 }, { wch: 22 }, { wch: 24 }];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Orders");
-  XLSX.writeFile(wb, `CampusBites_Orders_${from || "all"}_to_${to || "now"}.xlsx`);
+  XLSX.writeFile(wb, `CampusBites_Orders_${from||"all"}_to_${to||"now"}.xlsx`);
   showToast(`Excel downloaded (${rows.length} orders) ✅`, "success");
 }
 
@@ -1953,10 +1832,8 @@ function exportToPDF(rows, from, to) {
   const { jsPDF } = window.jspdf;
   if (!jsPDF) { showToast("PDF library not loaded", "error"); return; }
   const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
-  doc.setFillColor(249, 115, 22);
-  doc.rect(0, 0, 297, 22, "F");
-  doc.setTextColor(255, 255, 255);
-  doc.setFontSize(16); doc.setFont("helvetica", "bold");
+  doc.setFillColor(249, 115, 22); doc.rect(0, 0, 297, 22, "F");
+  doc.setTextColor(255, 255, 255); doc.setFontSize(16); doc.setFont("helvetica", "bold");
   doc.text("CampusBites — Orders Report", 14, 14);
   doc.setFontSize(10); doc.setFont("helvetica", "normal");
   doc.text(`Period: ${from && to ? `${from} → ${to}` : "All dates"}  |  Total: ${rows.length} orders`, 200, 14);
@@ -1972,8 +1849,7 @@ function exportToPDF(rows, from, to) {
   });
   const pageCount = doc.internal.getNumberOfPages();
   for (let i = 1; i <= pageCount; i++) {
-    doc.setPage(i);
-    doc.setFontSize(8); doc.setTextColor(150);
+    doc.setPage(i); doc.setFontSize(8); doc.setTextColor(150);
     doc.text(`Page ${i} of ${pageCount} — Generated ${new Date().toLocaleString()}`, 14, doc.internal.pageSize.height - 6);
   }
   doc.save(`CampusBites_Orders_${from||"all"}_to_${to||"now"}.pdf`);
@@ -1983,8 +1859,8 @@ function exportToPDF(rows, from, to) {
 // ══════════════════════════════════════════════════
 // MENU IMAGE UPLOAD — Cloudinary
 // ══════════════════════════════════════════════════
-const CLOUDINARY_CLOUD  = "your_cloud_name";       // ← replace with your Cloudinary cloud name
-const CLOUDINARY_PRESET = "campusbites_menu";      // ← replace with your unsigned upload preset
+const CLOUDINARY_CLOUD  = "your_cloud_name";
+const CLOUDINARY_PRESET = "campusbites_menu";
 
 async function uploadMenuImage(file) {
   if (!file) return null;
@@ -1998,13 +1874,6 @@ async function uploadMenuImage(file) {
     const res  = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/image/upload`, { method: "POST", body: formData });
     const data = await res.json();
     if (data.secure_url) { showToast("Image uploaded ✅", "success"); return data.secure_url; }
-    showToast("Cloudinary upload failed — using URL field instead", "error");
-    return null;
-  } catch {
-    showToast("Image upload failed — using URL field instead", "error");
-    return null;
-  }
+    showToast("Cloudinary upload failed", "error"); return null;
+  } catch { showToast("Image upload failed", "error"); return null; }
 }
-
-// FIX 4: Suppress favicon 404 — add to your server.js instead if preferred:
-// app.get('/favicon.ico', (req, res) => res.status(204).end());
