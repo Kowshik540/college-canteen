@@ -32,6 +32,54 @@ function _getToken() {
   return localStorage.getItem("token") || sessionStorage.getItem("token");
 }
 
+// ── Screenshot URL normalizer ──────────────────────
+// Handles all formats the backend might store:
+//   "payment_xxx.jpg"              → full URL with /uploads/payments/
+//   "uploads/payments/xxx.jpg"     → full URL with leading /
+//   "/uploads/payments/xxx.jpg"    → full URL with host
+//   "https://render.com/uploads/…" → already full, return as-is
+function _resolveScreenshotUrl(raw) {
+  if (!raw) return null;
+  raw = raw.trim();
+  if (raw.startsWith("http://") || raw.startsWith("https://")) return raw;
+  if (raw.startsWith("/uploads/")) return API + raw;
+  if (raw.startsWith("uploads/"))  return API + "/" + raw;
+  // bare filename
+  return API + "/uploads/payments/" + raw;
+}
+
+// ── Safe user name/email extractor ────────────────
+// user field may be a populated object, a string ID, or null
+function _userName(o) {
+  if (!o) return "Student";
+  if (o.customerName) return o.customerName;
+  if (o.user && typeof o.user === "object" && o.user.name) return o.user.name;
+  return "Student";
+}
+function _userEmail(o) {
+  if (o.user && typeof o.user === "object") return o.user.email || "";
+  return "";
+}
+function _userRoll(o) {
+  if (o.user && typeof o.user === "object") return o.user.rollNumber || "";
+  return "";
+}
+function _userBranch(o) {
+  if (o.user && typeof o.user === "object") return o.user.branch || "";
+  return "";
+}
+
+// ── Extract UTR from notes string ─────────────────
+// Notes format: "UPI Payment · UTR: 426819200123 · Pickup: 10:00 AM"
+function _extractUtr(o) {
+  if (o.paymentUtrNote && o.paymentUtrNote.trim()) return o.paymentUtrNote.trim();
+  if (o.notes) {
+    const m = o.notes.match(/UTR[:\s]+([A-Za-z0-9]+)/i);
+    if (m) return m[1];
+  }
+  return null;
+}
+
 // ══════════════════════════════════════════════════
 // LUNCH BREAK ENFORCEMENT
 // ══════════════════════════════════════════════════
@@ -188,7 +236,7 @@ function _checkAdminNewOrderNotifs(orders) {
   if (newOrders.length > 0) {
     _fireNotif(
       `🛎️ ${newOrders.length} New Order${newOrders.length > 1 ? "s" : ""}!`,
-      newOrders.map(o => `#${o._id.slice(-6).toUpperCase()} · ₹${o.totalAmount}`).join("\n"),
+      newOrders.map(o => `#${o._id.slice(-6).toUpperCase()} · ₹${o.totalAmount} · ${_userName(o)}`).join("\n"),
       "new-order-" + Date.now()
     );
   }
@@ -972,8 +1020,8 @@ const _ordersCache           = new Map();
 let   _adminOrdersRendering  = false;
 
 function _buildOrderCard(o, next, btnLabel, color) {
-  const displayName = o.customerName || (o.user?.name) || "Student";
-  const email       = o.user?.email || "";
+  const displayName = _userName(o);
+  const email       = _userEmail(o);
   const walkinBadge = o.createdByAdmin ? '<span class="badge-walkin">Walk-in</span>' : "";
   const payLabel    = o.paymentMethod === "online" ? "💳 UPI (Paid)" : "💵 Cash";
   // UTR number if available
@@ -1185,8 +1233,9 @@ async function updateOrderStatus(id, status, btn) {
   const card    = document.getElementById(`order-${id}`);
 
   if (status === "delivered" || status === "cancelled") {
-    // Animate card out immediately
-    if (card) _animateCardOut(card);
+    // Animate card out immediately, then reset render lock
+    if (card) _animateCardOut(card, () => { _adminOrdersRendering = false; });
+    else      _adminOrdersRendering = false;
     _ordersCache.delete(id);
   } else if (card && newLane) {
     const cfg = laneConfig[newLane];
@@ -1235,26 +1284,24 @@ async function updateOrderStatus(id, status, btn) {
     section.style.display = count > 0 ? "block" : "none";
   });
 
-  // ── Background server update ──
-  try {
-    const res = await fetch(`${API}/api/admin/orders/${id}/status`, {
-      method: "PATCH", headers: getAuthHeaders(), body: JSON.stringify({ status }),
-    });
+  // ── Background server update — fire and forget, never block UI ──
+  // Use no-await so the optimistic UI update is already done.
+  // If the PATCH fails we show a toast and let the next poll (2s) resync.
+  fetch(`${API}/api/admin/orders/${id}/status`, {
+    method: "PATCH", headers: getAuthHeaders(), body: JSON.stringify({ status }),
+  }).then(res => {
     if (!res.ok) {
-      showToast("Update failed — refreshing", "error");
+      showToast("Update failed — will resync", "error");
       _ordersCache.delete(id);
-      loadAdminOrders();  // resync from server
-      return;
+      // Don't call loadAdminOrders() — let the background poll handle it
+    } else {
+      showToast(`Order → ${status} ✅`, "success");
+      loadAdminStats();
     }
-    showToast(`Order → ${status} ✅`, "success");
-    // Light background sync — don't block UI
-    loadAdminStats();
-    setTimeout(loadAdminOrders, 1000);  // delayed sync to confirm server state
-  } catch {
-    showToast("Network error — refreshing", "error");
+  }).catch(() => {
+    showToast("Network error — will resync", "error");
     _ordersCache.delete(id);
-    loadAdminOrders();
-  }
+  });
 }
 
 // ══════════════════════════════════════════════════
@@ -1385,7 +1432,15 @@ async function loadAdminPayments() {
         <span style="background:#e63946;color:#fff;border-radius:99px;padding:2px 10px;font-size:0.78rem;margin-left:8px;vertical-align:middle;">${orders.length}</span>
       </h3>
       <div style="display:flex;flex-direction:column;align-items:stretch;gap:0;">
-        ${orders.map(o => `
+        ${orders.map(o => {
+          // Use helpers to safely resolve all fields
+          const name       = _userName(o);
+          const email      = _userEmail(o);
+          const roll       = _userRoll(o);
+          const branch     = _userBranch(o);
+          const utr        = _extractUtr(o);
+          const screenshotUrl = _resolveScreenshotUrl(o.paymentScreenshot);
+          return `
           <div class="pmt-card" id="pmt-${o._id}">
 
             <!-- ── Header ── -->
@@ -1401,9 +1456,9 @@ async function loadAdminPayments() {
             <div class="pmt-section">
               <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:4px;">
                 <div>
-                  <p style="font-weight:700;font-size:0.95rem;margin:0;">👤 ${o.user?.name || "N/A"}</p>
-                  ${o.user?.rollNumber ? `<p style="font-size:0.75rem;color:#f97316;font-family:monospace;margin:2px 0 0;">🎓 ${o.user.rollNumber}${o.user.branch ? " · " + o.user.branch : ""}</p>` : ""}
-                  <p style="font-size:0.72rem;opacity:0.45;margin:2px 0 0;">${o.user?.email || ""}</p>
+                  <p style="font-weight:700;font-size:0.95rem;margin:0;">👤 ${name}</p>
+                  ${roll ? `<p style="font-size:0.75rem;color:#f97316;font-family:monospace;margin:2px 0 0;">🎓 ${roll}${branch ? " · " + branch : ""}</p>` : ""}
+                  ${email ? `<p style="font-size:0.72rem;opacity:0.45;margin:2px 0 0;">${email}</p>` : ""}
                 </div>
                 <p style="font-size:0.72rem;opacity:0.4;margin:0;white-space:nowrap;">🕐 ${new Date(o.createdAt).toLocaleString()}</p>
               </div>
@@ -1423,34 +1478,33 @@ async function loadAdminPayments() {
 
             <!-- ── UTR / Transaction ID ── -->
             <div class="pmt-section">
-              ${o.paymentUtrNote ? `
+              ${utr ? `
                 <div class="pmt-utr-box">
                   <p class="pmt-utr-label">🔖 UTR / Transaction ID</p>
-                  <p class="pmt-utr-value">${o.paymentUtrNote}</p>
+                  <p class="pmt-utr-value">${utr}</p>
                 </div>` : `
                 <div style="display:flex;align-items:center;gap:8px;opacity:0.4;">
                   <span style="font-size:1.2rem;">🔖</span>
-                  <span style="font-size:0.85rem;">No UTR number provided by student</span>
+                  <span style="font-size:0.85rem;">No UTR number provided</span>
                 </div>`}
-              ${o.notes ? `<p style="font-size:0.8rem;opacity:0.5;margin:8px 0 0;">📝 ${o.notes}</p>` : ""}
             </div>
 
             <!-- ── Payment Screenshot ── -->
-            <div class="pmt-section" style="padding:0;">
-              ${o.paymentScreenshot ? `
-                <a href="${o.paymentScreenshot}" target="_blank" rel="noopener" class="pmt-screenshot-wrap">
+            <div style="padding:0;">
+              ${screenshotUrl ? `
+                <a href="${screenshotUrl}" target="_blank" rel="noopener" class="pmt-screenshot-wrap">
                   <img
-                    src="${o.paymentScreenshot}"
+                    src="${screenshotUrl}"
                     alt="Payment screenshot"
                     class="pmt-screenshot-img"
-                    onerror="this.parentElement.outerHTML='<div style=\"padding:16px;text-align:center;opacity:0.4;font-size:0.85rem;\">⚠️ Screenshot failed to load — <a href=\\"${o.paymentScreenshot}\\" target=\\"_blank\\" style=\\"color:#f97316;\\">Open directly</a></div>'"
+                    onerror="this.closest('.pmt-screenshot-wrap').outerHTML='<div style=\'padding:14px;text-align:center;opacity:0.5;font-size:0.85rem;\'>⚠️ Image failed — <a href=\'${screenshotUrl}\' target=\'_blank\' style=\'color:#f97316;\'>Open directly</a></div>'"
                   />
                 </a>
-                <p class="pmt-screenshot-hint">📷 Tap to open full size</p>` : `
+                <p class="pmt-screenshot-hint">📷 Tap screenshot to open full size</p>` : `
                 <div class="pmt-section">
                   <div class="pmt-no-screenshot">
                     <div style="font-size:2rem;margin-bottom:6px;">📷</div>
-                    <p style="margin:0;">No screenshot uploaded</p>
+                    <p style="margin:0;">No screenshot uploaded yet</p>
                   </div>
                 </div>`}
             </div>
@@ -1465,7 +1519,8 @@ async function loadAdminPayments() {
               </button>
             </div>
 
-          </div>`).join("")}
+          </div>`;
+        }).join("")}
       </div>`;
   } catch (err) {
     console.error("loadAdminPayments:", err);
@@ -1908,10 +1963,17 @@ document.addEventListener("DOMContentLoaded", () => {
   updateLunchBanner();
   setInterval(updateLunchBanner, 60000);
 
-  // If user is already logged in from a previous session, auto-request notif permission
+  // ── Restore correct page on reload ──────────────────────────────
+  // If user is already logged in, send them to the right page instead
+  // of always landing on the student menu (mainPage).
   const _existingUser = _getStoredUser();
   if (_existingUser) {
-    // Small delay so page finishes loading first
+    if (_existingUser.role === "admin") {
+      // Admin reload → go straight to admin dashboard
+      showPage("adminPage");
+    }
+    // Students stay on mainPage (already active by default in HTML)
+    // Auto-request notification permission
     setTimeout(_autoRequestNotifPermission, 1500);
   }
 
