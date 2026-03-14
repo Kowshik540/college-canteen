@@ -52,8 +52,12 @@ function _resolveScreenshotUrl(raw) {
 // user field may be a populated object, a string ID, or null
 function _userName(o) {
   if (!o) return "Student";
-  if (o.customerName) return o.customerName;
-  if (o.user && typeof o.user === "object" && o.user.name) return o.user.name;
+  // Walk-in order created by admin
+  if (o.customerName && o.customerName.trim()) return o.customerName.trim();
+  // Populated user object
+  if (o.user && typeof o.user === "object" && o.user.name) return o.user.name.trim();
+  // Some backends return userName directly on order
+  if (o.userName && o.userName.trim()) return o.userName.trim();
   return "Student";
 }
 function _userEmail(o) {
@@ -69,13 +73,20 @@ function _userBranch(o) {
   return "";
 }
 
-// ── Extract UTR from notes string ─────────────────
-// Notes format: "UPI Payment · UTR: 426819200123 · Pickup: 10:00 AM"
+// ── Extract UTR from all possible fields ──────────
+// Backend stores UTR in different places depending on version:
+//   o.paymentUtrNote   — dedicated field (newer)
+//   o.utrNumber        — multer form field name
+//   o.notes            — embedded as "UTR: 426819200123"
 function _extractUtr(o) {
-  if (o.paymentUtrNote && o.paymentUtrNote.trim()) return o.paymentUtrNote.trim();
+  // Check all possible field names first
+  if (o.paymentUtrNote && String(o.paymentUtrNote).trim()) return String(o.paymentUtrNote).trim();
+  if (o.utrNumber       && String(o.utrNumber).trim())       return String(o.utrNumber).trim();
+  if (o.utr             && String(o.utr).trim())             return String(o.utr).trim();
+  // Parse from notes string — matches "UTR: 123", "UTR:123", "UTR 123"
   if (o.notes) {
-    const m = o.notes.match(/UTR[:\s]+([A-Za-z0-9]+)/i);
-    if (m) return m[1];
+    const utrMatch = o.notes.match(/UTR\s*[:\-]?\s*([A-Za-z0-9]{8,})/i);
+    if (utrMatch) return utrMatch[1];
   }
   return null;
 }
@@ -170,17 +181,28 @@ async function requestPushPermission() {
 }
 
 function _fireNotif(title, body, tag) {
+  // Always check live permission — don't rely on _notifEnabled flag
+  if (typeof Notification === "undefined") return;
   if (Notification.permission !== "granted") return;
   try {
-    new Notification(title, {
-      body,
+    const n = new Notification(title, {
+      body:  body || "",
       icon:  "/images/upi-qr.PNG",
       badge: "/images/upi-qr.PNG",
       tag:   tag || "cb-" + Date.now(),
       requireInteraction: false,
     });
-  } catch(e) { console.warn("Notification failed:", e); }
+    // Auto-close after 6 seconds
+    setTimeout(() => { try { n.close(); } catch(e) {} }, 6000);
+  } catch(e) {
+    console.warn("Notification failed:", e);
+    // On some browsers (especially mobile), Notification() throws even when permission=granted
+    // In that case silently ignore
+  }
 }
+
+// Debug helper — call from browser console to test: window._testNotif()
+window._testNotif = () => _fireNotif("🔔 Test", "Notifications are working!", "test-" + Date.now());
 
 // ── Student notifications — track order status changes ──
 // Stores last known status per order so we only fire on actual changes
@@ -225,22 +247,32 @@ function _checkAdminNewOrderNotifs(orders) {
   if (Notification.permission !== "granted") return;
   const currentIds = new Set(orders.map(o => o._id));
   if (_adminLastOrderIds === null) {
-    _adminLastOrderIds = currentIds;
+    // First poll — just record IDs, don't fire
+    _adminLastOrderIds = new Set(currentIds);
     return;
   }
-  // New orders that just became confirmed (cash or approved UPI)
-  const newOrders = orders.filter(o =>
-    !_adminLastOrderIds.has(o._id) &&
-    (o.paymentMethod === "cash" || o.paymentStatus === "paid")
-  );
-  if (newOrders.length > 0) {
-    _fireNotif(
-      `🛎️ ${newOrders.length} New Order${newOrders.length > 1 ? "s" : ""}!`,
-      newOrders.map(o => `#${o._id.slice(-6).toUpperCase()} · ₹${o.totalAmount} · ${_userName(o)}`).join("\n"),
-      "new-order-" + Date.now()
-    );
-  }
-  _adminLastOrderIds = currentIds;
+  // Any brand-new order ID we haven't seen before
+  const newOrders = orders.filter(o => !_adminLastOrderIds.has(o._id));
+  newOrders.forEach(o => {
+    const isCash   = o.paymentMethod === "cash";
+    const isOnline = o.paymentMethod === "online";
+    const name     = _userName(o);
+    if (isCash) {
+      _fireNotif(
+        `🛎️ New Order — ₹${o.totalAmount}`,
+        `${name} placed an order (#${o._id.slice(-6).toUpperCase()}) · Cash on pickup`,
+        "new-order-" + o._id
+      );
+    } else if (isOnline) {
+      _fireNotif(
+        `💳 New UPI Order — ₹${o.totalAmount}`,
+        `${name} placed an order (#${o._id.slice(-6).toUpperCase()}) · Verify payment`,
+        "new-upi-" + o._id
+      );
+    }
+  });
+  // Update tracked IDs
+  _adminLastOrderIds = new Set(currentIds);
 }
 
 // Called during payments poll — notify admin of new screenshot uploads
@@ -1917,18 +1949,63 @@ let _adminTick = 0;
 setInterval(async () => {
   if (document.hidden) return;
   _adminTick++;
-  const adminPage = document.getElementById("adminPage");
+  const adminPage   = document.getElementById("adminPage");
+  const isAdminPage = adminPage?.classList.contains("active");
 
-  if (adminPage?.classList.contains("active")) {
-    // Orders tab: refresh every 2 seconds (guarded by _adminOrdersRendering)
+  if (isAdminPage) {
+    // Orders tab: refresh every 2 seconds
     if (currentAdminTab === "orders" && _adminTick % 2 === 0) loadAdminOrders();
-    // Payments tab: refresh every 8 seconds (key-diff prevents DOM rebuilds if unchanged)
+    // Payments tab: refresh every 8 seconds
     if (currentAdminTab === "payments" && _adminTick % 8 === 0) loadAdminPayments();
     // Stats: every 10 seconds
     if (_adminTick % 10 === 0) { loadAdminStats(); refreshPaymentsBadge(); }
   }
+
+  // ── Background notification polling (runs regardless of which tab/page is active) ──
+  // Checks for new orders every 5 seconds so admin gets notified even on other tabs
+  if (_adminTick % 5 === 0 && Notification.permission === "granted") {
+    const user = _getStoredUser();
+    if (user?.role === "admin") {
+      try {
+        const r  = await fetch(`${API}/api/admin/orders?limit=200`, { headers: getAuthHeaders() });
+        const d  = await r.json();
+        if (d.orders) _checkAdminNewOrderNotifs(d.orders);
+      } catch(e) {}
+      // Also check pending payments
+      try {
+        const r2 = await fetch(`${API}/api/admin/pending-payments`, { headers: getAuthHeaders() });
+        const d2 = await r2.json();
+        if (d2.orders) _checkAdminNewPaymentUploads(d2.orders);
+        // Update badge
+        const badge = document.getElementById("pendingPaymentsBadge");
+        if (badge) {
+          badge.textContent   = d2.orders?.length || 0;
+          badge.style.display = (d2.orders?.length > 0) ? "inline" : "none";
+        }
+      } catch(e) {}
+    }
+  }
+
   // Lunch banner: every 60 seconds
   if (_adminTick % 60 === 0) updateLunchBanner();
+}, 1000);
+
+// ── Student background notification poll ──────────────────
+// Runs every 5 seconds for logged-in students on ANY page
+// so they get order status notifications even on the main menu
+let _studentNotifTick = 0;
+setInterval(async () => {
+  if (document.hidden) return;
+  _studentNotifTick++;
+  if (_studentNotifTick % 5 !== 0) return;
+  if (Notification.permission !== "granted") return;
+  const user = _getStoredUser();
+  if (!user || user.role !== "user") return;
+  try {
+    const r = await fetch(`${API}/api/orders/my`, { headers: getAuthHeaders() });
+    const d = await r.json();
+    if (d.orders) _checkStudentOrderNotifs(d.orders);
+  } catch(e) {}
 }, 1000);
 
 async function refreshPaymentsBadge() {
