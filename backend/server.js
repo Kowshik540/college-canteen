@@ -50,6 +50,9 @@ app.use("/api/menu",   menuRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api/admin",  adminRoutes);
 
+// Silence browser favicon 404
+app.get("/favicon.ico", (_req, res) => res.status(204).end());
+
 app.get("/api/health", (_, res) => res.json({ status: "ok", time: new Date().toISOString() }));
 
 app.get("*", (req, res) => {
