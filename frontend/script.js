@@ -2101,65 +2101,82 @@ function renderTrackUI(order) {
   if (!el) return;
 
   const STEPS = [
-    { key: "pending",   label: "Order Placed", icon: "🛒", desc: "Your order has been received" },
-    { key: "confirmed", label: "Confirmed",     icon: "✅", desc: "Canteen confirmed your order" },
-    { key: "preparing", label: "Preparing",     icon: "🍳", desc: "Your food is being prepared" },
-    { key: "ready",     label: "Ready!",        icon: "🔔", desc: "Come pick up your order!" },
-    { key: "delivered", label: "Picked Up",     icon: "🎉", desc: "Enjoy your meal!" },
+    { key: "pending",   label: "Order\nPlaced",  icon: "🛒", desc: "Received" },
+    { key: "confirmed", label: "Confirmed",       icon: "✅", desc: "Accepted" },
+    { key: "preparing", label: "Preparing",       icon: "🍳", desc: "Cooking…"  },
+    { key: "ready",     label: "Ready!",          icon: "🔔", desc: "Pick up"   },
+    { key: "delivered", label: "Picked Up",       icon: "🎉", desc: "Enjoy!"    },
   ];
 
   const cancelled  = order.status === "cancelled";
   const currentIdx = cancelled ? -1 : STEPS.findIndex(s => s.key === order.status);
+  const n = STEPS.length;
+  const fillPct = cancelled ? 0 : currentIdx <= 0 ? 0 : Math.round((currentIdx / (n - 1)) * 100);
 
-  const stepHTML = STEPS.map((step, idx) => {
-    const done   = !cancelled && idx <= currentIdx;
+  const stepsHTML = STEPS.map((step, idx) => {
+    const done   = !cancelled && idx < currentIdx;
     const active = !cancelled && idx === currentIdx;
+    const cls    = done ? "done" : active ? "active" : "";
+    const dotContent = done ? "✓" : step.icon;
     return `
-      <div class="track-step ${done ? "done" : ""} ${active ? "active" : ""}">
-        <div class="track-step-icon">${done ? step.icon : (active ? step.icon : "○")}</div>
-        <div class="track-step-info">
-          <div class="track-step-label">${step.label}</div>
-          <div class="track-step-desc">${active ? step.desc : ""}</div>
-        </div>
-        ${idx < STEPS.length - 1 ? '<div class="track-connector"></div>' : ""}
+      <div class="track-step-col ${cls}">
+        <div class="track-dot">${dotContent}</div>
+        <div class="ts-label">${step.label.replace("\n", "<br>")}</div>
+        <div class="ts-desc">${(done || active) ? step.desc : ""}</div>
       </div>`;
   }).join("");
 
-  const progressPct = cancelled ? 0 : Math.round(((currentIdx + 1) / STEPS.length) * 100);
+  const activeStep = currentIdx >= 0 ? STEPS[currentIdx] : null;
 
   el.innerHTML = `
     <div class="track-card">
       <div class="track-header">
         <div>
-          <h3>#${order._id.slice(-6).toUpperCase()}</h3>
-          <p style="opacity:0.55;font-size:0.85rem;">${new Date(order.createdAt).toLocaleString()}</p>
+          <h3>Order #${order._id.slice(-6).toUpperCase()}</h3>
+          <p style="opacity:0.55;font-size:0.82rem;margin:2px 0 0;">${new Date(order.createdAt).toLocaleString()}</p>
         </div>
         <span class="order-status ${order.status}">${order.status.toUpperCase()}</span>
       </div>
-      ${cancelled ? `<div class="track-cancelled">❌ This order was cancelled</div>` : `
-        <div class="track-progress-bar-wrap">
-          <div class="track-progress-bar" style="width:${progressPct}%"></div>
+
+      ${cancelled
+        ? `<div class="track-cancelled">❌ This order was cancelled</div>`
+        : `
+        <div class="track-timeline">
+          <div class="track-timeline-fill" style="width:${fillPct}%"></div>
+          ${stepsHTML}
         </div>
-        <div class="track-steps">${stepHTML}</div>`}
+        ${activeStep ? `
+          <p class="track-status-label">
+            ${activeStep.icon} <strong>${activeStep.label}</strong> — ${
+              order.status === "pending"   ? "Your order has been received by the canteen." :
+              order.status === "confirmed" ? "The canteen has confirmed your order." :
+              order.status === "preparing" ? "Your food is being freshly prepared!" :
+              order.status === "ready"     ? "Your order is ready — come pick it up!" :
+              "Order complete. Enjoy your meal!"
+            }
+          </p>` : ""}
+      `}
+
       <div class="track-items">
-        <h4 style="margin-bottom:10px;">🛒 Items</h4>
+        <h4>🛒 Items</h4>
         ${order.items.map(i => `
           <div class="track-item-row">
             <span>${i.name} × ${i.quantity}</span>
             <span>₹${i.price * i.quantity}</span>
           </div>`).join("")}
-        <div class="track-item-row" style="font-weight:700;border-top:1px solid rgba(255,255,255,0.1);padding-top:8px;margin-top:6px;">
+        <div class="track-item-row total-row">
           <span>Total</span><span>₹${order.totalAmount}</span>
         </div>
       </div>
+
       ${order.status === "ready" ? `<div class="track-ready-banner">🔔 Your order is ready! Head to the canteen counter now.</div>` : ""}
+
       <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;">
         <button class="btn-secondary" onclick="showPage('ordersPage')">← Back to Orders</button>
         ${["pending","confirmed"].includes(order.status) ? `<button class="btn-primary" style="flex:1;" onclick="cancelOrder('${order._id}')">Cancel Order</button>` : ""}
       </div>
     </div>`;
 }
-
 // ══════════════════════════════════════════════════
 // EXPORT ORDERS
 // ══════════════════════════════════════════════════
