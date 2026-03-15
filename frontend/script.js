@@ -1,5 +1,5 @@
 // ══════════════════════════════════════════════════
-// CAMPUSBITES  script.js  v5.0 — Notifications + No Flicker
+// CAMPUSBITES  script.js  v5.1 — Freeze Fix
 // ══════════════════════════════════════════════════
 
 // ── Global state ──────────────────────────────────
@@ -13,7 +13,6 @@ let aoCart           = [];
 const API = "https://college-canteen-qr2t.onrender.com";
 
 function getAuthHeaders() {
-  // Check both storages — localStorage for "remember me", sessionStorage for session-only
   const token = localStorage.getItem("token") || sessionStorage.getItem("token");
   return {
     "Authorization": "Bearer " + token,
@@ -21,69 +20,39 @@ function getAuthHeaders() {
   };
 }
 
-// Helper: get stored user from either storage
 function _getStoredUser() {
   const raw = localStorage.getItem("user") || sessionStorage.getItem("user");
   try { return raw ? JSON.parse(raw) : null; } catch { return null; }
 }
 
-// Helper: get token from either storage
 function _getToken() {
   return localStorage.getItem("token") || sessionStorage.getItem("token");
 }
 
-// ── Screenshot URL normalizer ──────────────────────
-// Handles all formats the backend might store:
-//   "payment_xxx.jpg"              → full URL with /uploads/payments/
-//   "uploads/payments/xxx.jpg"     → full URL with leading /
-//   "/uploads/payments/xxx.jpg"    → full URL with host
-//   "https://render.com/uploads/…" → already full, return as-is
 function _resolveScreenshotUrl(raw) {
   if (!raw) return null;
   raw = raw.trim();
   if (raw.startsWith("http://") || raw.startsWith("https://")) return raw;
   if (raw.startsWith("/uploads/")) return API + raw;
   if (raw.startsWith("uploads/"))  return API + "/" + raw;
-  // bare filename
   return API + "/uploads/payments/" + raw;
 }
 
-// ── Safe user name/email extractor ────────────────
-// user field may be a populated object, a string ID, or null
 function _userName(o) {
   if (!o) return "Student";
-  // Walk-in order created by admin
   if (o.customerName && o.customerName.trim()) return o.customerName.trim();
-  // Populated user object
   if (o.user && typeof o.user === "object" && o.user.name) return o.user.name.trim();
-  // Some backends return userName directly on order
   if (o.userName && o.userName.trim()) return o.userName.trim();
   return "Student";
 }
-function _userEmail(o) {
-  if (o.user && typeof o.user === "object") return o.user.email || "";
-  return "";
-}
-function _userRoll(o) {
-  if (o.user && typeof o.user === "object") return o.user.rollNumber || "";
-  return "";
-}
-function _userBranch(o) {
-  if (o.user && typeof o.user === "object") return o.user.branch || "";
-  return "";
-}
+function _userEmail(o)  { if (o.user && typeof o.user === "object") return o.user.email || ""; return ""; }
+function _userRoll(o)   { if (o.user && typeof o.user === "object") return o.user.rollNumber || ""; return ""; }
+function _userBranch(o) { if (o.user && typeof o.user === "object") return o.user.branch || ""; return ""; }
 
-// ── Extract UTR from all possible fields ──────────
-// Backend stores UTR in different places depending on version:
-//   o.paymentUtrNote   — dedicated field (newer)
-//   o.utrNumber        — multer form field name
-//   o.notes            — embedded as "UTR: 426819200123"
 function _extractUtr(o) {
-  // Check all possible field names first
   if (o.paymentUtrNote && String(o.paymentUtrNote).trim()) return String(o.paymentUtrNote).trim();
-  if (o.utrNumber       && String(o.utrNumber).trim())       return String(o.utrNumber).trim();
-  if (o.utr             && String(o.utr).trim())             return String(o.utr).trim();
-  // Parse from notes string — matches "UTR: 123", "UTR:123", "UTR 123"
+  if (o.utrNumber       && String(o.utrNumber).trim())     return String(o.utrNumber).trim();
+  if (o.utr             && String(o.utr).trim())           return String(o.utr).trim();
   if (o.notes) {
     const utrMatch = o.notes.match(/UTR\s*[:\-]?\s*([A-Za-z0-9]{8,})/i);
     if (utrMatch) return utrMatch[1];
@@ -141,22 +110,18 @@ function showToast(msg, type = "info") {
 }
 
 // ══════════════════════════════════════════════════
-// BROWSER NOTIFICATIONS — shared by admin + student
+// BROWSER NOTIFICATIONS
 // ══════════════════════════════════════════════════
 let _notifEnabled = false;
 
-// Auto-enable if already granted in a previous session
 if (typeof Notification !== "undefined" && Notification.permission === "granted") {
   _notifEnabled = true;
 }
 
-// Auto-prompt for permission silently when user is logged in
-// Called after login and on DOMContentLoaded if already logged in
 async function _autoRequestNotifPermission() {
   if (!("Notification" in window)) return;
   if (Notification.permission === "granted") { _notifEnabled = true; return; }
-  if (Notification.permission === "denied")  return; // user explicitly denied — don't ask again
-  // "default" — ask once
+  if (Notification.permission === "denied")  return;
   try {
     const perm = await Notification.requestPermission();
     if (perm === "granted") {
@@ -181,7 +146,6 @@ async function requestPushPermission() {
 }
 
 function _fireNotif(title, body, tag) {
-  // Always check live permission — don't rely on _notifEnabled flag
   if (typeof Notification === "undefined") return;
   if (Notification.permission !== "granted") return;
   try {
@@ -192,20 +156,14 @@ function _fireNotif(title, body, tag) {
       tag:   tag || "cb-" + Date.now(),
       requireInteraction: false,
     });
-    // Auto-close after 6 seconds
     setTimeout(() => { try { n.close(); } catch(e) {} }, 6000);
   } catch(e) {
     console.warn("Notification failed:", e);
-    // On some browsers (especially mobile), Notification() throws even when permission=granted
-    // In that case silently ignore
   }
 }
 
-// Debug helper — call from browser console to test: window._testNotif()
 window._testNotif = () => _fireNotif("🔔 Test", "Notifications are working!", "test-" + Date.now());
 
-// ── Student notifications — track order status changes ──
-// Stores last known status per order so we only fire on actual changes
 const _studentOrderStatusCache = new Map();
 
 function _checkStudentOrderNotifs(orders) {
@@ -213,10 +171,8 @@ function _checkStudentOrderNotifs(orders) {
   orders.forEach(o => {
     const prev = _studentOrderStatusCache.get(o._id);
     const cur  = o.status + "|" + (o.paymentStatus || "");
-    // First time seeing this order — just record, don't fire
     if (!prev) { _studentOrderStatusCache.set(o._id, cur); return; }
     if (prev !== cur) {
-      // Status or payment status changed — fire appropriate notification
       if (o.status === "ready") {
         _fireNotif("🔔 Order Ready!", `Your order #${o._id.slice(-6).toUpperCase()} is ready for pickup!`, "ready-" + o._id);
       } else if (o.status === "confirmed") {
@@ -228,7 +184,6 @@ function _checkStudentOrderNotifs(orders) {
       } else if (o.status === "cancelled") {
         _fireNotif("❌ Order Cancelled", `Order #${o._id.slice(-6).toUpperCase()} was cancelled.`, "cancelled-" + o._id);
       }
-      // Payment status notifications
       if (o.paymentStatus === "rejected" && !prev.includes("rejected")) {
         _fireNotif("❌ Payment Rejected", `Payment for order #${o._id.slice(-6).toUpperCase()} was rejected. Please re-order.`, "payrej-" + o._id);
       } else if (o.paymentStatus === "paid" && prev.includes("awaiting")) {
@@ -239,7 +194,6 @@ function _checkStudentOrderNotifs(orders) {
   });
 }
 
-// ── Admin notifications — new orders + new payment uploads ──
 let _adminLastOrderIds  = null;
 let _adminLastPmtIds    = null;
 
@@ -247,35 +201,23 @@ function _checkAdminNewOrderNotifs(orders) {
   if (Notification.permission !== "granted") return;
   const currentIds = new Set(orders.map(o => o._id));
   if (_adminLastOrderIds === null) {
-    // First poll — just record IDs, don't fire
     _adminLastOrderIds = new Set(currentIds);
     return;
   }
-  // Any brand-new order ID we haven't seen before
   const newOrders = orders.filter(o => !_adminLastOrderIds.has(o._id));
   newOrders.forEach(o => {
     const isCash   = o.paymentMethod === "cash";
     const isOnline = o.paymentMethod === "online";
     const name     = _userName(o);
     if (isCash) {
-      _fireNotif(
-        `🛎️ New Order — ₹${o.totalAmount}`,
-        `${name} placed an order (#${o._id.slice(-6).toUpperCase()}) · Cash on pickup`,
-        "new-order-" + o._id
-      );
+      _fireNotif(`🛎️ New Order — ₹${o.totalAmount}`, `${name} placed an order (#${o._id.slice(-6).toUpperCase()}) · Cash on pickup`, "new-order-" + o._id);
     } else if (isOnline) {
-      _fireNotif(
-        `💳 New UPI Order — ₹${o.totalAmount}`,
-        `${name} placed an order (#${o._id.slice(-6).toUpperCase()}) · Verify payment`,
-        "new-upi-" + o._id
-      );
+      _fireNotif(`💳 New UPI Order — ₹${o.totalAmount}`, `${name} placed an order (#${o._id.slice(-6).toUpperCase()}) · Verify payment`, "new-upi-" + o._id);
     }
   });
-  // Update tracked IDs
   _adminLastOrderIds = new Set(currentIds);
 }
 
-// Called during payments poll — notify admin of new screenshot uploads
 function _checkAdminNewPaymentUploads(orders) {
   if (Notification.permission !== "granted") return;
   const currentPmtIds = new Set(orders.map(o => o._id));
@@ -310,7 +252,6 @@ function showPage(id) {
   if (id === "adminPage") { loadAdminStats(); setAdminTab("orders"); }
   if (id === "ordersPage") {
     loadMyOrders();
-    // Poll every 3 seconds — fast enough for real-time status without hammering server
     _ordersPageInterval = setInterval(() => { if (!document.hidden) loadMyOrders(); }, 3000);
   }
   if (id === "profilePage") {
@@ -347,14 +288,12 @@ async function handleLogin(event) {
     if (!res.ok) { showToast(data.error || "Login failed", "error"); return; }
     const rememberMe = document.getElementById("rememberMe")?.checked ?? true;
     const store = rememberMe ? localStorage : sessionStorage;
-    // If switching from remember to no-remember, clear old storage
     if (!rememberMe) localStorage.removeItem("token"), localStorage.removeItem("user");
     else             sessionStorage.removeItem("token"), sessionStorage.removeItem("user");
     store.setItem("token", data.token);
     store.setItem("user",  JSON.stringify(data.user));
     showToast("Welcome back! ✅", "success");
     updateNavbar();
-    // Auto-request notification permission for both students and admin
     _autoRequestNotifPermission();
     showPage(data.user.role === "admin" ? "adminPage" : "mainPage");
   } catch { showToast("Network error", "error"); }
@@ -417,7 +356,6 @@ function updateNavbar() {
   if (profileBtn) profileBtn.style.display = user.role === "user" ? "inline-block" : "none";
   if (mobileNav)  mobileNav.style.display  = user.role === "user" ? "flex" : "none";
 
-  // Update notification button state
   const notifBtn = document.getElementById("notifBtn");
   if (notifBtn && typeof Notification !== "undefined" && Notification.permission === "granted") {
     notifBtn.textContent = "🔔 Notifications ON";
@@ -817,12 +755,10 @@ async function submitUpiPayment() {
 }
 
 // ══════════════════════════════════════════════════
-// MY ORDERS — diff-patch, no flicker, with notifications
+// MY ORDERS
 // ══════════════════════════════════════════════════
 const STATUS_EMOJI = { pending:"⏳", confirmed:"✅", preparing:"🍳", ready:"🔔", delivered:"🎉", cancelled:"❌" };
 const _myOrdersCache = new Map();
-
-// Prevent concurrent fetches on the orders page
 let _myOrdersFetching = false;
 
 async function loadMyOrders() {
@@ -832,7 +768,6 @@ async function loadMyOrders() {
   const list = document.getElementById("ordersList");
   if (!list) { _myOrdersFetching = false; return; }
 
-  // Only show skeleton on very first load
   if (!list.querySelector(".order-card") && !list.querySelector(".orders-empty")) {
     list.innerHTML = "<p id='orders-loading' style='text-align:center;opacity:0.5;'>Loading...</p>";
   }
@@ -842,7 +777,6 @@ async function loadMyOrders() {
     const data   = await res.json();
     const orders = data.orders || [];
 
-    // Fire student notifications for any status changes
     _checkStudentOrderNotifs(orders);
 
     if (!orders.length) {
@@ -858,7 +792,6 @@ async function loadMyOrders() {
 
     const incomingIds = new Set(orders.map(o => o._id));
 
-    // Remove cards for cancelled/deleted orders
     list.querySelectorAll(".order-card[data-oid]").forEach(card => {
       if (!incomingIds.has(card.dataset.oid)) card.remove();
     });
@@ -877,14 +810,12 @@ async function loadMyOrders() {
       const cacheKey = o.status + "|" + (o.paymentStatus || "");
 
       if (!existing) {
-        // New card — build and insert in correct position
         const div  = document.createElement("div");
         div.innerHTML = _buildMyOrderCard(o, active, payLabel);
         const card = div.firstElementChild;
         list.insertBefore(card, list.children[idx] || null);
         _myOrdersCache.set(o._id, cacheKey);
       } else {
-        // Existing card — only patch what changed, never rebuild
         if (_myOrdersCache.get(o._id) !== cacheKey) {
           const badge = existing.querySelector(".order-status");
           if (badge) { badge.className = `order-status ${o.status}`; badge.textContent = `${STATUS_EMOJI[o.status]||""} ${o.status.toUpperCase()}`; }
@@ -894,11 +825,10 @@ async function loadMyOrders() {
           if (btnRow) btnRow.innerHTML = _buildMyOrderButtons(o, active);
           _myOrdersCache.set(o._id, cacheKey);
         }
-        // unchanged → zero DOM work — no flicker
       }
     });
 
-  } catch { /* silent — don't wipe UI on network blip */ }
+  } catch { /* silent */ }
   finally { _myOrdersFetching = false; }
 }
 
@@ -1045,19 +975,16 @@ function renderMonthlyTable(breakdown) {
 
 // ══════════════════════════════════════════════════
 // ADMIN — ORDERS PIPELINE
-// Only shows orders with paymentStatus = "paid" OR paymentMethod = "cash"
-// Fully flicker-free: diffs by ID, never wipes the container
 // ══════════════════════════════════════════════════
-const _ordersCache           = new Map();
-let   _adminOrdersRendering  = false;
+const _ordersCache          = new Map();
+let   _adminOrdersRendering = false;
 
 function _buildOrderCard(o, next, btnLabel, color) {
   const displayName = _userName(o);
   const email       = _userEmail(o);
   const walkinBadge = o.createdByAdmin ? '<span class="badge-walkin">Walk-in</span>' : "";
   const payLabel    = o.paymentMethod === "online" ? "💳 UPI (Paid)" : "💵 Cash";
-  // UTR number if available
-  const utrLine = o.paymentUtrNote
+  const utrLine     = o.paymentUtrNote
     ? `<p style="font-size:0.75rem;color:#f97316;margin:2px 0;">🔖 UTR: ${o.paymentUtrNote}</p>`
     : "";
 
@@ -1132,6 +1059,7 @@ const _laneOf = status => {
   return null;
 };
 
+// ── FIX: Fetch first, release lock before DOM work ──────────────
 async function loadAdminOrders() {
   if (_adminOrdersRendering) return;
   _adminOrdersRendering = true;
@@ -1141,13 +1069,23 @@ async function loadAdminOrders() {
   if (container.dataset.tab && container.dataset.tab !== "orders") { _adminOrdersRendering = false; return; }
   container.dataset.tab = "orders";
 
+  // ── Step 1: fetch data ──────────────────────────────────────────
+  let data;
   try {
-    const res  = await fetch(`${API}/api/admin/orders?limit=100`, { headers: getAuthHeaders() });
-    const data = await res.json();
+    const res = await fetch(`${API}/api/admin/orders?limit=100`, { headers: getAuthHeaders() });
+    data = await res.json();
+  } catch (err) {
+    console.error("loadAdminOrders fetch:", err);
+    _adminOrdersRendering = false;   // ← always release on fetch failure
+    return;
+  }
 
-    // ── KEY FILTER: only show orders where payment is confirmed ──
-    // Cash orders (including admin walk-ins) always shown.
-    // Online/UPI orders only shown after admin approves (paymentStatus === "paid").
+  // ── Step 2: release lock BEFORE touching the DOM ────────────────
+  // Button clicks that arrive while we were fetching can now proceed.
+  _adminOrdersRendering = false;
+
+  // ── Step 3: DOM work (never blocks button clicks) ───────────────
+  try {
     const allOrders = (data.orders || []).filter(o => _laneOf(o.status));
     const active    = allOrders.filter(o =>
       o.paymentMethod === "cash" ||
@@ -1155,7 +1093,6 @@ async function loadAdminOrders() {
       o.paymentStatus  === "paid"
     );
 
-    // Fire admin new-order notifications
     _checkAdminNewOrderNotifs(active);
 
     const laneConfig = {
@@ -1169,11 +1106,9 @@ async function loadAdminOrders() {
         container.innerHTML = '<div class="orders-empty" style="text-align:center;padding:3rem;opacity:0.4;font-size:1.3rem;">🎉 No active orders right now</div>';
         _ordersCache.clear();
       }
-      _adminOrdersRendering = false;
       return;
     }
 
-    // If switching from empty state, reset
     if (container.querySelector(".orders-empty") || !container.querySelector(".order-section")) {
       container.innerHTML = "";
       _ordersCache.clear();
@@ -1181,7 +1116,6 @@ async function loadAdminOrders() {
 
     const activeIds = new Set(active.map(o => o._id));
 
-    // Remove gone orders
     _ordersCache.forEach((cached, oid) => {
       if (!activeIds.has(oid)) {
         const card = document.getElementById(`order-${oid}`);
@@ -1190,10 +1124,8 @@ async function loadAdminOrders() {
       }
     });
 
-    // Ensure all lane sections exist (idempotent)
     Object.entries(laneConfig).forEach(([id, cfg]) => _ensureSection(container, id, cfg.title, cfg.icon, cfg.color));
 
-    // Process each order
     active.forEach(o => {
       const newLane      = _laneOf(o.status);
       const cfg          = laneConfig[newLane];
@@ -1203,7 +1135,6 @@ async function loadAdminOrders() {
       const existingCard = document.getElementById(`order-${o._id}`);
 
       if (!existingCard && !cached) {
-        // Brand new
         const div = document.createElement("div");
         div.innerHTML = _buildOrderCard(o, cfg.next, cfg.label, cfg.color);
         _animateCardIn(div.firstElementChild, grid);
@@ -1212,23 +1143,19 @@ async function loadAdminOrders() {
       } else if (existingCard && cached) {
         if (cached.status !== o.status || cached.lane !== newLane) {
           if (cached.lane !== newLane) {
-            // Move to new lane
             _animateCardOut(existingCard, () => {
               const div = document.createElement("div");
               div.innerHTML = _buildOrderCard(o, cfg.next, cfg.label, cfg.color);
               _animateCardIn(div.firstElementChild, grid);
             });
           } else {
-            // Same lane — patch badge only, no rebuild
             const badge = existingCard.querySelector(".order-status");
             if (badge) { badge.className = `order-status ${o.status}`; badge.textContent = o.status.toUpperCase(); }
             existingCard.dataset.status = o.status;
           }
           _ordersCache.set(o._id, { status: o.status, lane: newLane });
         }
-        // unchanged → zero DOM work
       } else if (!existingCard && cached) {
-        // Cache stale, DOM gone — rebuild
         const div = document.createElement("div");
         div.innerHTML = _buildOrderCard(o, cfg.next, cfg.label, cfg.color);
         _animateCardIn(div.firstElementChild, grid);
@@ -1236,7 +1163,6 @@ async function loadAdminOrders() {
       }
     });
 
-    // Update section counts & visibility
     Object.keys(laneConfig).forEach(id => {
       const section = document.getElementById(`section-${id}`);
       const grid    = document.getElementById(`grid-${id}`);
@@ -1247,62 +1173,75 @@ async function loadAdminOrders() {
       section.style.display = count > 0 ? "block" : "none";
     });
 
-  } catch(err) { console.error("loadAdminOrders:", err); }
-  finally { _adminOrdersRendering = false; }
+  } catch(err) { console.error("loadAdminOrders DOM:", err); }
+  // No finally needed — lock already released after fetch above
 }
 
+// ── FIX: Release lock immediately, never rely on animation callbacks ──
 async function updateOrderStatus(id, status, btn) {
   if (btn) { btn.disabled = true; btn.textContent = "Updating..."; }
 
-  // ── Optimistic instant UI update ──
-  // Move / remove the card immediately so admin sees instant feedback
   const laneConfig = {
     new:       { title: "New Orders",   icon: "⏳", color: "#f97316", next: "preparing", label: "🍳 Start Preparing" },
     preparing: { title: "Preparing",    icon: "🍳", color: "#0d6efd", next: "ready",     label: "🔔 Mark Ready"      },
     ready:     { title: "Ready Pickup", icon: "🔔", color: "#048A81", next: "delivered", label: "🎉 Delivered"        },
   };
+
+  // ── FIX 1: Release the render lock immediately, unconditionally ─────
+  // The old code only released the lock inside animation callbacks for
+  // some branches (delivered) and never released it for same-lane updates
+  // (e.g. pending → confirmed, or preparing → ready staying in same lane).
+  // This caused the poller to permanently bail after one button click.
+  _adminOrdersRendering = false;
+
   const newLane = _laneOf(status);
   const card    = document.getElementById(`order-${id}`);
 
   if (status === "delivered" || status === "cancelled") {
-    // Animate card out immediately, then reset render lock
-    if (card) _animateCardOut(card, () => { _adminOrdersRendering = false; });
-    else      _adminOrdersRendering = false;
+    // Remove card — no lock needed
+    if (card) _animateCardOut(card);
     _ordersCache.delete(id);
+
   } else if (card && newLane) {
-    const cfg = laneConfig[newLane];
+    const cfg     = laneConfig[newLane];
     const oldLane = _ordersCache.get(id)?.lane;
+
     if (oldLane && oldLane !== newLane) {
-      // Move card to new lane visually right away
+      // Move card to new lane
       _animateCardOut(card, () => {
         const newGrid = document.getElementById(`grid-${newLane}`);
         if (newGrid) {
-          // Build placeholder card with new status
           const div = document.createElement("div");
           div.innerHTML = card.outerHTML
             .replace(`id="order-${id}"`, `id="order-${id}"`)
             .replace(/data-status="[^"]*"/, `data-status="${status}"`);
           const newCard = div.firstElementChild;
-          // Update action button
+          // ── FIX 2: re-enable the button in the cloned card ──────────
           const actionBtn = newCard.querySelector(".order-action-btn");
           if (actionBtn && cfg) {
             actionBtn.style.background = cfg.color;
             actionBtn.textContent      = cfg.label;
+            actionBtn.disabled         = false;
             actionBtn.onclick = () => updateOrderStatus(id, cfg.next, actionBtn);
           }
-          // Update status badge
           const badge = newCard.querySelector(".order-status");
           if (badge) { badge.className = `order-status ${status}`; badge.textContent = status.toUpperCase(); }
           _animateCardIn(newCard, newGrid);
         }
       });
     } else {
-      // Same lane — just patch badge + button
+      // ── FIX 3: Same-lane patch — re-enable button here too ──────────
+      // Previously the button stayed disabled forever on same-lane updates
+      // (e.g. clicking "Mark Ready" when the card stays in the ready lane).
       const badge = card.querySelector(".order-status");
       if (badge) { badge.className = `order-status ${status}`; badge.textContent = status.toUpperCase(); }
       if (btn) { btn.textContent = cfg?.label || status; btn.disabled = false; }
     }
     _ordersCache.set(id, { status, lane: newLane });
+
+  } else {
+    // Card not in DOM — cache may be stale, let the next poll rebuild it
+    _ordersCache.delete(id);
   }
 
   // Update section counts immediately
@@ -1316,16 +1255,13 @@ async function updateOrderStatus(id, status, btn) {
     section.style.display = count > 0 ? "block" : "none";
   });
 
-  // ── Background server update — fire and forget, never block UI ──
-  // Use no-await so the optimistic UI update is already done.
-  // If the PATCH fails we show a toast and let the next poll (2s) resync.
+  // ── Background server PATCH — fire and forget ────────────────────
   fetch(`${API}/api/admin/orders/${id}/status`, {
     method: "PATCH", headers: getAuthHeaders(), body: JSON.stringify({ status }),
   }).then(res => {
     if (!res.ok) {
       showToast("Update failed — will resync", "error");
       _ordersCache.delete(id);
-      // Don't call loadAdminOrders() — let the background poll handle it
     } else {
       showToast(`Order → ${status} ✅`, "success");
       loadAdminStats();
@@ -1359,9 +1295,8 @@ function setAdminTab(tab) {
 
 // ══════════════════════════════════════════════════
 // ADMIN — PAYMENTS
-// Shows UTR + screenshot prominently. No flickering (only rebuilt on data change).
 // ══════════════════════════════════════════════════
-let _paymentsRenderKey = "";  // prevents unnecessary re-renders
+let _paymentsRenderKey = "";
 
 async function loadAdminPayments() {
   const content = document.getElementById("adminContent");
@@ -1374,17 +1309,14 @@ async function loadAdminPayments() {
     const data   = await res.json();
     const orders = data.orders || [];
 
-    // Admin notification for new payment uploads
     _checkAdminNewPaymentUploads(orders);
 
-    // Badge update
     const badge = document.getElementById("pendingPaymentsBadge");
     if (badge) {
       badge.textContent   = orders.length;
       badge.style.display = orders.length ? "inline" : "none";
     }
 
-    // Only rebuild if data changed — prevents flicker on background poll
     const newKey = orders.map(o => o._id + (o.paymentUtrNote||"") + (o.paymentScreenshot||"")).join(",");
     if (newKey === _paymentsRenderKey && content.querySelector(".pmt-card")) return;
     _paymentsRenderKey = newKey;
@@ -1401,63 +1333,23 @@ async function loadAdminPayments() {
 
     content.innerHTML = `
       <style>
-        .pmt-card {
-          background: rgba(255,255,255,0.04);
-          border: 1px solid rgba(255,255,255,0.1);
-          border-radius: 16px;
-          padding: 0;
-          overflow: hidden;
-          margin-bottom: 16px;
-          max-width: 520px;
-          width: 100%;
-          box-sizing: border-box;
-        }
-        .pmt-header {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          padding: 14px 16px 10px;
-          border-bottom: 1px solid rgba(255,255,255,0.07);
-        }
-        .pmt-section { padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,0.06); }
-        .pmt-section:last-child { border-bottom: none; }
-        .pmt-utr-box {
-          background: rgba(249,115,22,0.12);
-          border: 1.5px solid rgba(249,115,22,0.4);
-          border-radius: 10px;
-          padding: 10px 14px;
-          margin: 0;
-        }
-        .pmt-utr-label { font-size: 0.7rem; opacity: 0.6; margin: 0 0 3px; text-transform: uppercase; letter-spacing: 0.5px; }
-        .pmt-utr-value { font-size: 1.15rem; font-weight: 800; color: #f97316; font-family: monospace; margin: 0; letter-spacing: 1px; word-break: break-all; }
-        .pmt-screenshot-wrap { display: block; width: 100%; }
-        .pmt-screenshot-img {
-          width: 100%;
-          max-height: 340px;
-          object-fit: contain;
-          display: block;
-          background: rgba(255,255,255,0.06);
-          cursor: pointer;
-        }
-        .pmt-screenshot-hint { font-size: 0.72rem; opacity: 0.4; text-align: center; padding: 6px 0 10px; }
-        .pmt-no-screenshot {
-          border: 2px dashed rgba(249,115,22,0.2);
-          border-radius: 10px;
-          padding: 20px;
-          text-align: center;
-          opacity: 0.45;
-          font-size: 0.88rem;
-        }
-        .pmt-actions { display: flex; gap: 10px; padding: 14px 16px; }
-        .pmt-btn { flex: 1; padding: 13px 8px; border: none; border-radius: 10px; font-size: 0.95rem; font-weight: 700; cursor: pointer; transition: opacity 0.15s, transform 0.1s; font-family: inherit; }
-        .pmt-btn:active { opacity: 0.8; transform: scale(0.98); }
-        .pmt-btn-approve { background: #2D6A4F; color: #fff; }
-        .pmt-btn-reject  { background: #e63946; color: #fff; }
-        @media (max-width: 480px) {
-          .pmt-card { border-radius: 12px; }
-          .pmt-utr-value { font-size: 1rem; }
-          .pmt-screenshot-img { max-height: 260px; }
-        }
+        .pmt-card { background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:0;overflow:hidden;margin-bottom:16px;max-width:520px;width:100%;box-sizing:border-box; }
+        .pmt-header { display:flex;justify-content:space-between;align-items:center;padding:14px 16px 10px;border-bottom:1px solid rgba(255,255,255,0.07); }
+        .pmt-section { padding:12px 16px;border-bottom:1px solid rgba(255,255,255,0.06); }
+        .pmt-section:last-child { border-bottom:none; }
+        .pmt-utr-box { background:rgba(249,115,22,0.12);border:1.5px solid rgba(249,115,22,0.4);border-radius:10px;padding:10px 14px;margin:0; }
+        .pmt-utr-label { font-size:0.7rem;opacity:0.6;margin:0 0 3px;text-transform:uppercase;letter-spacing:0.5px; }
+        .pmt-utr-value { font-size:1.15rem;font-weight:800;color:#f97316;font-family:monospace;margin:0;letter-spacing:1px;word-break:break-all; }
+        .pmt-screenshot-wrap { display:block;width:100%; }
+        .pmt-screenshot-img { width:100%;max-height:340px;object-fit:contain;display:block;background:rgba(255,255,255,0.06);cursor:pointer; }
+        .pmt-screenshot-hint { font-size:0.72rem;opacity:0.4;text-align:center;padding:6px 0 10px; }
+        .pmt-no-screenshot { border:2px dashed rgba(249,115,22,0.2);border-radius:10px;padding:20px;text-align:center;opacity:0.45;font-size:0.88rem; }
+        .pmt-actions { display:flex;gap:10px;padding:14px 16px; }
+        .pmt-btn { flex:1;padding:13px 8px;border:none;border-radius:10px;font-size:0.95rem;font-weight:700;cursor:pointer;transition:opacity 0.15s,transform 0.1s;font-family:inherit; }
+        .pmt-btn:active { opacity:0.8;transform:scale(0.98); }
+        .pmt-btn-approve { background:#2D6A4F;color:#fff; }
+        .pmt-btn-reject  { background:#e63946;color:#fff; }
+        @media(max-width:480px){ .pmt-card{border-radius:12px;} .pmt-utr-value{font-size:1rem;} .pmt-screenshot-img{max-height:260px;} }
       </style>
       <h3 style="margin:0 0 16px;font-size:1.1rem;">
         💳 Pending UPI Verifications
@@ -1465,17 +1357,14 @@ async function loadAdminPayments() {
       </h3>
       <div style="display:flex;flex-direction:column;align-items:stretch;gap:0;">
         ${orders.map(o => {
-          // Use helpers to safely resolve all fields
-          const name       = _userName(o);
-          const email      = _userEmail(o);
-          const roll       = _userRoll(o);
-          const branch     = _userBranch(o);
-          const utr        = _extractUtr(o);
+          const name          = _userName(o);
+          const email         = _userEmail(o);
+          const roll          = _userRoll(o);
+          const branch        = _userBranch(o);
+          const utr           = _extractUtr(o);
           const screenshotUrl = _resolveScreenshotUrl(o.paymentScreenshot);
           return `
           <div class="pmt-card" id="pmt-${o._id}">
-
-            <!-- ── Header ── -->
             <div class="pmt-header">
               <div>
                 <div style="font-size:0.65rem;opacity:0.4;letter-spacing:0.5px;">ORDER ID</div>
@@ -1483,8 +1372,6 @@ async function loadAdminPayments() {
               </div>
               <span class="order-status pending" style="font-size:0.72rem;">⏳ AWAITING</span>
             </div>
-
-            <!-- ── Customer info ── -->
             <div class="pmt-section">
               <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:4px;">
                 <div>
@@ -1495,8 +1382,6 @@ async function loadAdminPayments() {
                 <p style="font-size:0.72rem;opacity:0.4;margin:0;white-space:nowrap;">🕐 ${new Date(o.createdAt).toLocaleString()}</p>
               </div>
             </div>
-
-            <!-- ── Items + Total ── -->
             <div class="pmt-section">
               ${o.items.map(i => `
                 <div style="display:flex;justify-content:space-between;font-size:0.88rem;padding:2px 0;">
@@ -1507,8 +1392,6 @@ async function loadAdminPayments() {
                 <span>Total</span><span>₹${o.totalAmount}</span>
               </div>
             </div>
-
-            <!-- ── UTR / Transaction ID ── -->
             <div class="pmt-section">
               ${utr ? `
                 <div class="pmt-utr-box">
@@ -1520,15 +1403,10 @@ async function loadAdminPayments() {
                   <span style="font-size:0.85rem;">No UTR number provided</span>
                 </div>`}
             </div>
-
-            <!-- ── Payment Screenshot ── -->
             <div style="padding:0;">
               ${screenshotUrl ? `
                 <a href="${screenshotUrl}" target="_blank" rel="noopener" class="pmt-screenshot-wrap">
-                  <img
-                    src="${screenshotUrl}"
-                    alt="Payment screenshot"
-                    class="pmt-screenshot-img"
+                  <img src="${screenshotUrl}" alt="Payment screenshot" class="pmt-screenshot-img"
                     onerror="this.closest('.pmt-screenshot-wrap').outerHTML='<div style=\'padding:14px;text-align:center;opacity:0.5;font-size:0.85rem;\'>⚠️ Image failed — <a href=\'${screenshotUrl}\' target=\'_blank\' style=\'color:#f97316;\'>Open directly</a></div>'"
                   />
                 </a>
@@ -1540,17 +1418,10 @@ async function loadAdminPayments() {
                   </div>
                 </div>`}
             </div>
-
-            <!-- ── Action Buttons ── -->
             <div class="pmt-actions">
-              <button class="pmt-btn pmt-btn-approve" onclick="verifyUpiPayment('${o._id}', true)">
-                ✅ Approve & Confirm
-              </button>
-              <button class="pmt-btn pmt-btn-reject" onclick="verifyUpiPayment('${o._id}', false)">
-                ❌ Reject
-              </button>
+              <button class="pmt-btn pmt-btn-approve" onclick="verifyUpiPayment('${o._id}', true)">✅ Approve & Confirm</button>
+              <button class="pmt-btn pmt-btn-reject"  onclick="verifyUpiPayment('${o._id}', false)">❌ Reject</button>
             </div>
-
           </div>`;
         }).join("")}
       </div>`;
@@ -1576,7 +1447,7 @@ async function verifyUpiPayment(orderId, approved) {
       return;
     }
     showToast(approved ? "✅ Payment approved!" : "❌ Payment rejected", approved ? "success" : "info");
-    _paymentsRenderKey = "";   // force re-render on next poll
+    _paymentsRenderKey = "";
     if (card) {
       card.style.transition = "opacity 0.4s, transform 0.4s";
       card.style.transform  = "scale(0.9)";
@@ -1940,9 +1811,7 @@ async function submitAdminOrder() {
 }
 
 // ══════════════════════════════════════════════════
-// AUTO-REFRESH — background polling, no flicker
-// All functions guard against concurrent calls internally.
-// Intervals are staggered so they don't all fire at once.
+// AUTO-REFRESH — background polling
 // ══════════════════════════════════════════════════
 let _adminTick = 0;
 
@@ -1953,30 +1822,23 @@ setInterval(async () => {
   const isAdminPage = adminPage?.classList.contains("active");
 
   if (isAdminPage) {
-    // Orders tab: refresh every 2 seconds
-    if (currentAdminTab === "orders" && _adminTick % 2 === 0) loadAdminOrders();
-    // Payments tab: refresh every 8 seconds
-    if (currentAdminTab === "payments" && _adminTick % 8 === 0) loadAdminPayments();
-    // Stats: every 10 seconds
+    if (currentAdminTab === "orders"   && _adminTick % 2  === 0) loadAdminOrders();
+    if (currentAdminTab === "payments" && _adminTick % 8  === 0) loadAdminPayments();
     if (_adminTick % 10 === 0) { loadAdminStats(); refreshPaymentsBadge(); }
   }
 
-  // ── Background notification polling (runs regardless of which tab/page is active) ──
-  // Checks for new orders every 5 seconds so admin gets notified even on other tabs
   if (_adminTick % 5 === 0 && Notification.permission === "granted") {
     const user = _getStoredUser();
     if (user?.role === "admin") {
       try {
-        const r  = await fetch(`${API}/api/admin/orders?limit=200`, { headers: getAuthHeaders() });
-        const d  = await r.json();
+        const r = await fetch(`${API}/api/admin/orders?limit=200`, { headers: getAuthHeaders() });
+        const d = await r.json();
         if (d.orders) _checkAdminNewOrderNotifs(d.orders);
       } catch(e) {}
-      // Also check pending payments
       try {
         const r2 = await fetch(`${API}/api/admin/pending-payments`, { headers: getAuthHeaders() });
         const d2 = await r2.json();
         if (d2.orders) _checkAdminNewPaymentUploads(d2.orders);
-        // Update badge
         const badge = document.getElementById("pendingPaymentsBadge");
         if (badge) {
           badge.textContent   = d2.orders?.length || 0;
@@ -1986,13 +1848,9 @@ setInterval(async () => {
     }
   }
 
-  // Lunch banner: every 60 seconds
   if (_adminTick % 60 === 0) updateLunchBanner();
 }, 1000);
 
-// ── Student background notification poll ──────────────────
-// Runs every 5 seconds for logged-in students on ANY page
-// so they get order status notifications even on the main menu
 let _studentNotifTick = 0;
 setInterval(async () => {
   if (document.hidden) return;
@@ -2040,17 +1898,9 @@ document.addEventListener("DOMContentLoaded", () => {
   updateLunchBanner();
   setInterval(updateLunchBanner, 60000);
 
-  // ── Restore correct page on reload ──────────────────────────────
-  // If user is already logged in, send them to the right page instead
-  // of always landing on the student menu (mainPage).
   const _existingUser = _getStoredUser();
   if (_existingUser) {
-    if (_existingUser.role === "admin") {
-      // Admin reload → go straight to admin dashboard
-      showPage("adminPage");
-    }
-    // Students stay on mainPage (already active by default in HTML)
-    // Auto-request notification permission
+    if (_existingUser.role === "admin") showPage("adminPage");
     setTimeout(_autoRequestNotifPermission, 1500);
   }
 
@@ -2062,7 +1912,6 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 });
 
-// Expose to inline onclick handlers
 window.showPage  = showPage;
 window.openCart  = openCart;
 window.closeCart = closeCart;
@@ -2101,26 +1950,25 @@ function renderTrackUI(order) {
   if (!el) return;
 
   const STEPS = [
-    { key: "pending",   label: "Order\nPlaced",  icon: "🛒", desc: "Received" },
-    { key: "confirmed", label: "Confirmed",       icon: "✅", desc: "Accepted" },
-    { key: "preparing", label: "Preparing",       icon: "🍳", desc: "Cooking…"  },
-    { key: "ready",     label: "Ready!",          icon: "🔔", desc: "Pick up"   },
-    { key: "delivered", label: "Picked Up",       icon: "🎉", desc: "Enjoy!"    },
+    { key: "pending",   label: "Order\nPlaced", icon: "🛒", desc: "Received" },
+    { key: "confirmed", label: "Confirmed",      icon: "✅", desc: "Accepted" },
+    { key: "preparing", label: "Preparing",      icon: "🍳", desc: "Cooking…" },
+    { key: "ready",     label: "Ready!",         icon: "🔔", desc: "Pick up"  },
+    { key: "delivered", label: "Picked Up",      icon: "🎉", desc: "Enjoy!"   },
   ];
 
   const cancelled  = order.status === "cancelled";
   const currentIdx = cancelled ? -1 : STEPS.findIndex(s => s.key === order.status);
-  const n = STEPS.length;
-  const fillPct = cancelled ? 0 : currentIdx <= 0 ? 0 : Math.round((currentIdx / (n - 1)) * 100);
+  const n          = STEPS.length;
+  const fillPct    = cancelled ? 0 : currentIdx <= 0 ? 0 : Math.round((currentIdx / (n - 1)) * 100);
 
   const stepsHTML = STEPS.map((step, idx) => {
     const done   = !cancelled && idx < currentIdx;
     const active = !cancelled && idx === currentIdx;
     const cls    = done ? "done" : active ? "active" : "";
-    const dotContent = done ? "✓" : step.icon;
     return `
       <div class="track-step-col ${cls}">
-        <div class="track-dot">${dotContent}</div>
+        <div class="track-dot">${done ? "✓" : step.icon}</div>
         <div class="ts-label">${step.label.replace("\n", "<br>")}</div>
         <div class="ts-desc">${(done || active) ? step.desc : ""}</div>
       </div>`;
@@ -2137,7 +1985,6 @@ function renderTrackUI(order) {
         </div>
         <span class="order-status ${order.status}">${order.status.toUpperCase()}</span>
       </div>
-
       ${cancelled
         ? `<div class="track-cancelled">❌ This order was cancelled</div>`
         : `
@@ -2147,16 +1994,15 @@ function renderTrackUI(order) {
         </div>
         ${activeStep ? `
           <p class="track-status-label">
-            ${activeStep.icon} <strong>${activeStep.label}</strong> — ${
+            ${activeStep.icon} <strong>${activeStep.label.replace("\n"," ")}</strong> — ${
               order.status === "pending"   ? "Your order has been received by the canteen." :
-              order.status === "confirmed" ? "The canteen has confirmed your order." :
-              order.status === "preparing" ? "Your food is being freshly prepared!" :
-              order.status === "ready"     ? "Your order is ready — come pick it up!" :
-              "Order complete. Enjoy your meal!"
+              order.status === "confirmed" ? "The canteen has confirmed your order."        :
+              order.status === "preparing" ? "Your food is being freshly prepared!"         :
+              order.status === "ready"     ? "Your order is ready — come pick it up!"       :
+                                            "Order complete. Enjoy your meal!"
             }
           </p>` : ""}
       `}
-
       <div class="track-items">
         <h4>🛒 Items</h4>
         ${order.items.map(i => `
@@ -2168,15 +2014,14 @@ function renderTrackUI(order) {
           <span>Total</span><span>₹${order.totalAmount}</span>
         </div>
       </div>
-
       ${order.status === "ready" ? `<div class="track-ready-banner">🔔 Your order is ready! Head to the canteen counter now.</div>` : ""}
-
       <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;">
         <button class="btn-secondary" onclick="showPage('ordersPage')">← Back to Orders</button>
         ${["pending","confirmed"].includes(order.status) ? `<button class="btn-primary" style="flex:1;" onclick="cancelOrder('${order._id}')">Cancel Order</button>` : ""}
       </div>
     </div>`;
 }
+
 // ══════════════════════════════════════════════════
 // EXPORT ORDERS
 // ══════════════════════════════════════════════════
